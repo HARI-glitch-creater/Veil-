@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">Veil</string>
+    <string name="welcome_subtitle">Zero-knowledge messaging on your own database</string>
+    <string name="role_host_title">Host a Veil Room</string>
+    <string name="role_host_desc">Connect your Supabase or self-hosted server and get a 12-digit Veil Code.</string>
+    <string name="role_join_title">Join a Veil Room</string>
+    <string name="role_join_desc">Enter a 12-digit Veil Code or scan a Room QR to connect privately.</string>
+    <string name="nav_rooms">Rooms</string>
+    <string name="nav_backend">Backend</string>
+    <string name="nav_identity">Identity</string>
+    <string name="backend_supabase">Supabase</string>
+    <string name="backend_self_hosted">Self-Hosted</string>
+    <string name="veil_code_label">12-Digit Veil Code</string>
+    <string name="e2ee_badge_verified">End-to-end encrypted · Verified</string>
+    <string name="e2ee_badge_unverified">End-to-end encrypted · Tap to verify</string>
+    <string name="empty_rooms_title">No Veil Rooms yet</string>
+    <string name="empty_rooms_desc">Host a room on your own database or enter a 12-digit Veil Code to start chatting.</string>
+</resources>

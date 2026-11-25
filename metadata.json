@@ -1,0 +1,6 @@
+{
+  "name": "Veil",
+  "description": "Privacy-first self-hosted and bring-your-own-database messenger with end-to-end encryption and 12-digit Veil Rooms.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
