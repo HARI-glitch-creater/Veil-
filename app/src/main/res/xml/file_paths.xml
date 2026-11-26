@@ -3,4 +3,10 @@
     <files-path
         name="vault_media"
         path="vault_media/" />
+    <cache-path
+        name="camera_captures"
+        path="camera_captures/" />
+    <external-files-path
+        name="apk_updates"
+        path="Download/" />
 </paths>

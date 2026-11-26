@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -59,15 +60,15 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.theme.AmbientGlowMint
+import coil.compose.AsyncImage
 import com.example.ui.theme.AmbientGlowSlate
-import com.example.ui.theme.GlacierMint
 import com.example.ui.theme.GlassBorderBottom
 import com.example.ui.theme.GlassBorderTop
 import com.example.ui.theme.GlassSurface
 import com.example.ui.theme.GlassSurfaceElevated
 import com.example.ui.theme.GlassSurfaceSubtle
 import com.example.ui.theme.JetBrainsMonoFamily
+import com.example.ui.theme.LocalVeilAccent
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.ObsidianDeep
 import com.example.ui.theme.SlateMuted
@@ -76,18 +77,19 @@ import com.example.ui.theme.SnowPrimary
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import java.io.File
 
 @Composable
 fun VeilObsidianBackdrop(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
+    val accent = LocalVeilAccent.current
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(ObsidianBg)
     ) {
-        // Subtle ambient atmospheric refraction layers behind translucent glass cards
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawCircle(
                 brush = Brush.radialGradient(
@@ -104,7 +106,7 @@ fun VeilObsidianBackdrop(
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        AmbientGlowMint.copy(alpha = 0.45f),
+                        accent.ambientGlow.copy(alpha = 0.55f),
                         Color.Transparent
                     ),
                     center = Offset(size.width * 0.88f, size.height * 0.78f),
@@ -163,7 +165,7 @@ fun GlassPill(
     text: String,
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
-    accentColor: Color = GlacierMint,
+    accentColor: Color = LocalVeilAccent.current.highlight,
     containerColor: Color = GlassSurfaceSubtle,
     monospace: Boolean = false,
     onClick: (() -> Unit)? = null
@@ -215,6 +217,8 @@ fun GlassTextField(
     modifier: Modifier = Modifier,
     placeholder: String = "",
     singleLine: Boolean = true,
+    minLines: Int = 1,
+    maxLines: Int = if (singleLine) 1 else 4,
     isSecret: Boolean = false,
     monospace: Boolean = false,
     keyboardType: KeyboardType = KeyboardType.Text,
@@ -222,6 +226,7 @@ fun GlassTextField(
     tag: String? = null
 ) {
     var revealed by remember { mutableStateOf(false) }
+    val accent = LocalVeilAccent.current
     val shape = RoundedCornerShape(16.dp)
 
     Column(modifier = modifier.fillMaxWidth()) {
@@ -258,6 +263,8 @@ fun GlassTextField(
                 MaterialTheme.typography.bodyLarge.copy(color = SnowPrimary)
             },
             singleLine = singleLine,
+            minLines = minLines,
+            maxLines = maxLines,
             visualTransformation = if (isSecret && !revealed) {
                 PasswordVisualTransformation()
             } else {
@@ -279,11 +286,11 @@ fun GlassTextField(
             colors = OutlinedTextFieldDefaults.colors(
                 focusedContainerColor = GlassSurfaceElevated.copy(alpha = 0.72f),
                 unfocusedContainerColor = GlassSurfaceSubtle,
-                focusedBorderColor = GlacierMint.copy(alpha = 0.75f),
+                focusedBorderColor = accent.highlight.copy(alpha = 0.78f),
                 unfocusedBorderColor = GlassBorderTop,
-                focusedLabelColor = GlacierMint,
+                focusedLabelColor = accent.highlight,
                 unfocusedLabelColor = SlateSecondary,
-                cursorColor = GlacierMint
+                cursorColor = accent.highlight
             )
         )
         if (!supportingText.isNullOrBlank()) {
@@ -306,14 +313,15 @@ fun GlassPrimaryButton(
     enabled: Boolean = true,
     tag: String? = null
 ) {
+    val accent = LocalVeilAccent.current
     Button(
         onClick = onClick,
         enabled = enabled,
         shape = RoundedCornerShape(16.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = GlacierMint,
+            containerColor = accent.primary,
             contentColor = ObsidianDeep,
-            disabledContainerColor = GlacierMint.copy(alpha = 0.25f),
+            disabledContainerColor = accent.primary.copy(alpha = 0.25f),
             disabledContentColor = ObsidianDeep.copy(alpha = 0.6f)
         ),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
@@ -381,11 +389,59 @@ fun GlassSecondaryButton(
 }
 
 @Composable
+fun ProfileAvatar(
+    localPfpPath: String,
+    username: String,
+    modifier: Modifier = Modifier,
+    size: Dp = 48.dp,
+    showOnlineDot: Boolean = false,
+    accent: Color = LocalVeilAccent.current.highlight,
+    onClick: (() -> Unit)? = null
+) {
+    val file = remember(localPfpPath) {
+        if (localPfpPath.isNotBlank()) File(localPfpPath).takeIf { it.exists() } else null
+    }
+    Box(
+        modifier = modifier
+            .size(size)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+    ) {
+        if (file != null) {
+            AsyncImage(
+                model = file,
+                contentDescription = "$username profile picture",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape)
+                    .border(1.dp, accent.copy(alpha = 0.45f), CircleShape)
+            )
+        } else {
+            MonogramAvatar(
+                label = username,
+                size = size,
+                accent = accent
+            )
+        }
+        if (showOnlineDot) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size((size * 0.25f).coerceIn(10.dp, 14.dp))
+                    .clip(CircleShape)
+                    .background(LocalVeilAccent.current.primary)
+                    .border(2.dp, ObsidianBg, CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
 fun MonogramAvatar(
     label: String,
     modifier: Modifier = Modifier,
     size: Dp = 44.dp,
-    accent: Color = GlacierMint
+    accent: Color = LocalVeilAccent.current.highlight
 ) {
     val initials = remember(label) {
         label.trim()
@@ -414,7 +470,8 @@ fun MonogramAvatar(
             text = initials,
             style = MaterialTheme.typography.titleSmall.copy(
                 color = SnowPrimary,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                fontSize = if (size >= 84.dp) 28.sp else 15.sp
             )
         )
     }

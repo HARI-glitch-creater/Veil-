@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -16,7 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -24,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Code
@@ -49,9 +54,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,15 +70,13 @@ import com.example.ui.VeilViewModel
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassPill
 import com.example.ui.components.GlassPrimaryButton
-import com.example.ui.components.GlassSecondaryButton
 import com.example.ui.components.GlassTextField
 import com.example.ui.theme.CoralError
-import com.example.ui.theme.GlacierMint
-import com.example.ui.theme.GlacierMintContainer
 import com.example.ui.theme.GlassBorderTop
 import com.example.ui.theme.GlassSurfaceSubtle
 import com.example.ui.theme.IceCyan
 import com.example.ui.theme.JetBrainsMonoFamily
+import com.example.ui.theme.LocalVeilAccent
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SlateMuted
 import com.example.ui.theme.SlateSecondary
@@ -84,37 +86,57 @@ import com.example.ui.theme.SnowPrimary
 @Composable
 fun BackendSettingsScreen(
     viewModel: VeilViewModel,
+    onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    BackHandler(onBack = onBack)
+
+    val context = LocalContext.current
+    val accent = LocalVeilAccent.current
     val profiles by viewModel.backendProfiles.collectAsStateWithLifecycle()
-    val isBusy by viewModel.isBusy.collectAsStateWithLifecycle()
-    val clipboard = LocalClipboardManager.current
 
     var showAddSheet by remember { mutableStateOf(false) }
     var showSqlSheet by remember { mutableStateOf(false) }
+    var isTesting by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
             .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .padding(horizontal = 20.dp)
     ) {
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Backend",
-                    style = MaterialTheme.typography.headlineMedium.copy(color = SnowPrimary)
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Your Supabase or self-hosted server profiles",
-                    style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
-                )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.testTag("backend_settings_back")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = "Back",
+                        tint = SnowPrimary
+                    )
+                }
+                Column {
+                    Text(
+                        text = "Backend Nodes",
+                        style = MaterialTheme.typography.titleLarge.copy(color = SnowPrimary)
+                    )
+                    Text(
+                        text = "Supabase or self-hosted servers",
+                        style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
+                    )
+                }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -138,20 +160,20 @@ fun BackendSettingsScreen(
                     modifier = Modifier
                         .size(44.dp)
                         .clip(CircleShape)
-                        .background(GlacierMintContainer)
-                        .border(1.dp, GlacierMint.copy(alpha = 0.42f), CircleShape)
+                        .background(accent.container)
+                        .border(1.dp, accent.highlight.copy(alpha = 0.42f), CircleShape)
                         .testTag("backend_add_button")
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Add,
                         contentDescription = "Add backend profile",
-                        tint = GlacierMint
+                        tint = accent.highlight
                     )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(18.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         if (profiles.isEmpty()) {
             Box(
@@ -172,7 +194,7 @@ fun BackendSettingsScreen(
                         Icon(
                             imageVector = Icons.Rounded.Storage,
                             contentDescription = null,
-                            tint = GlacierMint,
+                            tint = accent.highlight,
                             modifier = Modifier.size(34.dp)
                         )
                         Text(
@@ -180,7 +202,7 @@ fun BackendSettingsScreen(
                             style = MaterialTheme.typography.titleLarge.copy(color = SnowPrimary)
                         )
                         Text(
-                            text = "Connect a Supabase project with your API key or point Veil to your self-hosted homelab server.",
+                            text = "Connect a Supabase project with your API key or point Veil to your self-hosted server.",
                             style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
                         )
                         Spacer(modifier = Modifier.height(4.dp))
@@ -198,15 +220,21 @@ fun BackendSettingsScreen(
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 104.dp)
+                contentPadding = PaddingValues(bottom = 32.dp)
             ) {
                 items(profiles, key = { it.id }) { profile ->
                     BackendProfileCard(
                         profile = profile,
-                        isBusy = isBusy,
-                        onSetActive = { viewModel.setActiveBackend(profile.id) },
-                        onTest = { viewModel.testSavedProfile(profile) },
-                        onDelete = { viewModel.deleteBackend(profile.id) }
+                        isBusy = isTesting,
+                        onSetActive = { viewModel.setActiveBackendProfile(profile.id) },
+                        onTest = {
+                            isTesting = true
+                            viewModel.testSavedBackendProfile(profile) { res ->
+                                isTesting = false
+                                viewModel.postBanner(res.message)
+                            }
+                        },
+                        onDelete = { viewModel.deleteBackendProfile(profile.id) }
                     )
                 }
             }
@@ -221,10 +249,9 @@ fun BackendSettingsScreen(
     }
 
     if (showSqlSheet) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
             onDismissRequest = { showSqlSheet = false },
-            sheetState = sheetState,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             containerColor = ObsidianBg,
             contentColor = SnowPrimary
         ) {
@@ -237,7 +264,7 @@ fun BackendSettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "Supabase Encrypted Tables SQL",
+                    text = "Veil v1.0.1 Encrypted Tables SQL",
                     style = MaterialTheme.typography.titleLarge.copy(color = SnowPrimary)
                 )
                 GlassCard(
@@ -249,7 +276,7 @@ fun BackendSettingsScreen(
                         text = VeilBackendClient.SUPABASE_SQL_SCHEMA,
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontFamily = JetBrainsMonoFamily,
-                            color = GlacierMint,
+                            color = accent.highlight,
                             lineHeight = 16.sp
                         )
                     )
@@ -258,8 +285,9 @@ fun BackendSettingsScreen(
                     text = "Copy SQL Schema",
                     icon = Icons.Rounded.ContentCopy,
                     onClick = {
-                        clipboard.setText(AnnotatedString(VeilBackendClient.SUPABASE_SQL_SCHEMA))
-                        viewModel.showToast("SQL copied to clipboard")
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("Veil SQL Schema", VeilBackendClient.SUPABASE_SQL_SCHEMA))
+                        viewModel.postBanner("8-table Veil SQL schema copied.")
                         showSqlSheet = false
                     },
                     modifier = Modifier.fillMaxWidth()
@@ -278,12 +306,13 @@ private fun BackendProfileCard(
     onTest: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val accentTokens = LocalVeilAccent.current
     val isSupabase = profile.backendType == BackendType.SUPABASE
-    val accent = if (isSupabase) GlacierMint else IceCyan
+    val tint = if (isSupabase) accentTokens.highlight else IceCyan
 
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
-        borderTopColor = if (profile.isActive) accent.copy(alpha = 0.45f) else GlassBorderTop,
+        borderTopColor = if (profile.isActive) tint.copy(alpha = 0.45f) else GlassBorderTop,
         contentPadding = PaddingValues(16.dp),
         onClick = onSetActive
     ) {
@@ -302,14 +331,14 @@ private fun BackendProfileCard(
                         modifier = Modifier
                             .size(38.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(accent.copy(alpha = 0.14f))
-                            .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
+                            .background(tint.copy(alpha = 0.14f))
+                            .border(1.dp, tint.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = if (isSupabase) Icons.Rounded.Storage else Icons.Rounded.Dns,
                             contentDescription = null,
-                            tint = accent,
+                            tint = tint,
                             modifier = Modifier.size(19.dp)
                         )
                     }
@@ -336,7 +365,7 @@ private fun BackendProfileCard(
                     GlassPill(
                         text = "Active",
                         icon = Icons.Rounded.CheckCircle,
-                        accentColor = GlacierMint
+                        accentColor = accentTokens.highlight
                     )
                 }
             }
@@ -371,7 +400,7 @@ private fun BackendProfileCard(
                     Icon(
                         imageVector = Icons.Rounded.NetworkCheck,
                         contentDescription = "Test server connection",
-                        tint = GlacierMint,
+                        tint = accentTokens.highlight,
                         modifier = Modifier.size(19.dp)
                     )
                 }
@@ -398,7 +427,6 @@ private fun AddBackendProfileSheet(
     viewModel: VeilViewModel,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var selectedType by remember { mutableStateOf(BackendType.SUPABASE) }
     var name by remember { mutableStateOf("") }
     var baseUrl by remember { mutableStateOf("") }
@@ -411,9 +439,16 @@ private fun AddBackendProfileSheet(
     var webhookUrl by remember { mutableStateOf("") }
     var customHeadersRaw by remember { mutableStateOf("") }
 
+    fun parseHeadersMap(raw: String): Map<String, String> =
+        raw.lines().mapNotNull { line ->
+            val idx = line.indexOf(':')
+            if (idx <= 0) null
+            else line.substring(0, idx).trim() to line.substring(idx + 1).trim()
+        }.filter { it.first.isNotBlank() && it.second.isNotBlank() }.toMap()
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = ObsidianBg,
         contentColor = SnowPrimary
     ) {
@@ -501,20 +536,19 @@ private fun AddBackendProfileSheet(
                         GlassTextField(
                             value = webSocketUrl,
                             onValueChange = { webSocketUrl = it },
-                            label = "WebSocket URL (optional)",
-                            placeholder = "wss://veil.homelab.local/ws",
+                            label = "WebSocket URL (Optional)",
                             monospace = true
                         )
                         GlassTextField(
                             value = mediaUploadUrl,
                             onValueChange = { mediaUploadUrl = it },
-                            label = "S3 / Media Endpoint (optional)",
+                            label = "S3 / Media Endpoint (Optional)",
                             monospace = true
                         )
                         GlassTextField(
                             value = webhookUrl,
                             onValueChange = { webhookUrl = it },
-                            label = "Webhook URL (optional)",
+                            label = "Webhook URL (Optional)",
                             monospace = true
                         )
                         GlassTextField(
@@ -540,13 +574,19 @@ private fun AddBackendProfileSheet(
                             apiKey = apiKey,
                             authType = if (selectedType == BackendType.SUPABASE) AuthType.BEARER else authType,
                             authHeaderName = authHeaderName,
-                            customHeadersRaw = customHeadersRaw,
+                            customHeaders = parseHeadersMap(customHeadersRaw),
                             webSocketUrl = webSocketUrl,
                             mediaUploadUrl = mediaUploadUrl,
                             webhookUrl = webhookUrl
-                        ),
-                        onSaved = onDismiss
-                    )
+                        )
+                    ) { res ->
+                        res.onSuccess {
+                            viewModel.postBanner("Backend profile saved.")
+                            onDismiss()
+                        }.onFailure { err ->
+                            viewModel.postBanner(err.message ?: "Unable to save backend.")
+                        }
+                    }
                 },
                 modifier = Modifier.fillMaxWidth(),
                 tag = "save_backend_profile_button"

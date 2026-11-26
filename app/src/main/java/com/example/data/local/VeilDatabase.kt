@@ -30,6 +30,13 @@ class VeilTypeConverters {
         runCatching { RoomRole.valueOf(value) }.getOrDefault(RoomRole.HOST)
 
     @TypeConverter
+    fun fromChannelType(value: ChannelType): String = value.name
+
+    @TypeConverter
+    fun toChannelType(value: String): ChannelType =
+        runCatching { ChannelType.valueOf(value) }.getOrDefault(ChannelType.DIRECT)
+
+    @TypeConverter
     fun fromContentType(value: MessageContentType): String = value.name
 
     @TypeConverter
@@ -42,15 +49,27 @@ class VeilTypeConverters {
     @TypeConverter
     fun toSyncStatus(value: String): SyncStatus =
         runCatching { SyncStatus.valueOf(value) }.getOrDefault(SyncStatus.PENDING)
+
+    @TypeConverter
+    fun fromCallDirection(value: CallDirection): String = value.name
+
+    @TypeConverter
+    fun toCallDirection(value: String): CallDirection =
+        runCatching { CallDirection.valueOf(value) }.getOrDefault(CallDirection.OUTGOING)
 }
 
 @Database(
     entities = [
+        UserProfileEntity::class,
         BackendProfileEntity::class,
         VeilRoomEntity::class,
-        MessageEntity::class
+        RoomMemberEntity::class,
+        CommunityEntity::class,
+        CommunityMemberEntity::class,
+        MessageEntity::class,
+        CallHistoryEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(VeilTypeConverters::class)
@@ -67,7 +86,10 @@ abstract class VeilDatabase : RoomDatabase() {
                     context.applicationContext,
                     VeilDatabase::class.java,
                     "veil_local_vault.db"
-                ).build().also { INSTANCE = it }
+                )
+                    .fallbackToDestructiveMigration(true)
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }

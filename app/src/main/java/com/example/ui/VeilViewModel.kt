@@ -1,304 +1,465 @@
 package com.example.ui
 
-import android.annotation.SuppressLint
 import android.app.Application
-import android.location.Location
-import android.location.LocationManager
 import android.net.Uri
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.call.ActiveCallState
+import com.example.call.IncomingCallBridge
+import com.example.call.VoiceCallController
 import com.example.crypto.LocalIdentity
-import com.example.crypto.ParsedRoomInvite
 import com.example.data.BackendProfileDraft
+import com.example.data.BootRoute
 import com.example.data.HostRoomOutcome
 import com.example.data.VeilRepository
 import com.example.data.local.BackendProfileEntity
+import com.example.data.local.CallHistoryEntity
+import com.example.data.local.ChannelType
+import com.example.data.local.CommunityEntity
+import com.example.data.local.CommunityMemberEntity
 import com.example.data.local.MessageContentType
 import com.example.data.local.MessageEntity
+import com.example.data.local.RoomMemberEntity
+import com.example.data.local.UserProfileEntity
 import com.example.data.local.VeilRoomEntity
 import com.example.data.network.ConnectionTestResult
 import com.example.media.VoiceNoteManager
 import com.example.media.VoicePlaybackState
 import com.example.media.VoiceRecordingState
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
+import com.example.notifications.VeilNotificationHelper
+import com.example.ui.theme.ThemePreferences
+import com.example.ui.theme.VeilAccentPresets
+import com.example.update.ReleaseUpdateInfo
+import com.example.update.UpdateManager
+import com.example.workers.VeilWorkScheduler
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
+data class OnboardingDraft(
+    val username: String = "",
+    val motto: String = "",
+    val gender: String = "Prefer not to say",
+    val localPfpPath: String = ""
+)
+
+@OptIn(ExperimentalCoroutinesApi::class)
 class VeilViewModel(application: Application) : AndroidViewModel(application) {
 
     val repository = VeilRepository(application)
-    private val voiceManager = VoiceNoteManager(application, viewModelScope)
+    val themePreferences = ThemePreferences(application)
+    val notificationHelper = VeilNotificationHelper(application)
+    val updateManager = UpdateManager(application)
+    val voiceManager = VoiceNoteManager(application, viewModelScope)
 
-    val rooms: StateFlow<List<VeilRoomEntity>> = repository.roomsFlow.stateIn(
+    val voiceCallController = VoiceCallController(
+        context = application,
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = emptyList()
+        crypto = repository.crypto,
+        notificationHelper = notificationHelper,
+        onSendEncryptedSignal = { roomId, signal ->
+            repository.sendEncryptedCallSignal(roomId, signal)
+        },
+        onRecordCallHistory = { roomId, peerPub, peerName, peerPfp, dir, dur ->
+            repository.recordCallHistory(roomId, peerPub, peerName, peerPfp, dir, dur)
+        }
     )
 
-    val backendProfiles: StateFlow<List<BackendProfileEntity>> = repository.backendProfilesFlow.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = emptyList()
-    )
+    private val _bootRoute = MutableStateFlow<BootRoute?>(null)
+    val bootRoute: StateFlow<BootRoute?> = _bootRoute.asStateFlow()
 
-    private val _identity = MutableStateFlow(repository.getIdentity())
-    val identity: StateFlow<LocalIdentity> = _identity.asStateFlow()
+    private val _onboardingDraft = MutableStateFlow(OnboardingDraft())
+    val onboardingDraft: StateFlow<OnboardingDraft> = _onboardingDraft.asStateFlow()
 
+    val userProfile: StateFlow<UserProfileEntity?> = repository.observeUserProfile()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val backendProfiles: StateFlow<List<BackendProfileEntity>> = repository.observeBackendProfiles()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val rooms: StateFlow<List<VeilRoomEntity>> = repository.observeRooms()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val activeRoom: StateFlow<VeilRoomEntity?> = repository.observeActiveRoom()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val activeRoomMembers: StateFlow<List<RoomMemberEntity>> = activeRoom.flatMapLatest { room ->
+        if (room != null) repository.observeRoomMembers(room.id) else flowOf(emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val activeRoomCommunities: StateFlow<List<CommunityEntity>> = activeRoom.flatMapLatest { room ->
+        if (room != null) repository.observeCommunitiesForRoom(room.id) else flowOf(emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val activeRoomCallHistory: StateFlow<List<CallHistoryEntity>> = activeRoom.flatMapLatest { room ->
+        if (room != null) repository.observeCallHistory(room.id) else flowOf(emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val accentColor: StateFlow<Color> = themePreferences.accentColorFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), VeilAccentPresets.DefaultAccent)
+
+    val activeCallState: StateFlow<ActiveCallState> = voiceCallController.callState
     val recordingState: StateFlow<VoiceRecordingState> = voiceManager.recordingState
     val playbackState: StateFlow<VoicePlaybackState> = voiceManager.playbackState
 
-    private val _connectionTest = MutableStateFlow<ConnectionTestResult?>(null)
-    val connectionTest: StateFlow<ConnectionTestResult?> = _connectionTest.asStateFlow()
+    private val _availableUpdate = MutableStateFlow<ReleaseUpdateInfo?>(null)
+    val availableUpdate: StateFlow<ReleaseUpdateInfo?> = _availableUpdate.asStateFlow()
 
-    private val _isBusy = MutableStateFlow(false)
-    val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
+    private val _isCheckingUpdate = MutableStateFlow(false)
+    val isCheckingUpdate: StateFlow<Boolean> = _isCheckingUpdate.asStateFlow()
 
-    private val _toastMessage = MutableStateFlow<String?>(null)
-    val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
+    private val _statusBanner = MutableStateFlow<String?>(null)
+    val statusBanner: StateFlow<String?> = _statusBanner.asStateFlow()
 
-    private val _hostOutcome = MutableStateFlow<HostRoomOutcome?>(null)
-    val hostOutcome: StateFlow<HostRoomOutcome?> = _hostOutcome.asStateFlow()
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
 
     private var activeSyncJob: Job? = null
-    private var activeWsJob: Job? = null
+    private var realtimeJob: Job? = null
+    private var notifCounter = 1000
 
-    fun consumeToast() {
-        _toastMessage.value = null
-    }
+    init {
+        notificationHelper.ensureChannels()
+        VeilWorkScheduler.scheduleAll(application)
 
-    fun showToast(message: String) {
-        _toastMessage.value = message
-    }
-
-    fun clearConnectionTest() {
-        _connectionTest.value = null
-    }
-
-    fun clearHostOutcome() {
-        _hostOutcome.value = null
-    }
-
-    fun updateHandle(newHandle: String) {
-        _identity.value = repository.updateHandle(newHandle)
-        showToast("Handle updated")
-    }
-
-    fun observeRoom(roomId: String) = repository.observeRoom(roomId)
-
-    fun observeMessages(roomId: String) = repository.observeMessages(roomId)
-
-    fun startRoomSync(roomId: String) {
-        activeSyncJob?.cancel()
-        activeWsJob?.cancel()
-        viewModelScope.launch { repository.clearUnread(roomId) }
-
-        activeSyncJob = viewModelScope.launch {
-            while (isActive) {
-                repository.syncRoom(roomId)
-                val room = rooms.value.firstOrNull { it.id == roomId }
-                val intervalSec = backendProfiles.value
-                    .firstOrNull { it.id == room?.backendProfileId }
-                    ?.pollIntervalSec ?: 5
-                delay(intervalSec.coerceIn(2, 60) * 1000L)
-            }
+        IncomingCallBridge.onDeclineFromLockScreen = { _, _, _, _ ->
+            voiceCallController.declineIncomingCall()
         }
 
-        activeWsJob = viewModelScope.launch {
-            val room = rooms.value.firstOrNull { it.id == roomId } ?: return@launch
-            val config = repository.resolveBackendConfig(room.backendProfileId) ?: return@launch
-            repository.backendClient.observeWebSocketMessages(config, room.veilCode)
-                .collectLatest { incoming ->
-                    val latestRoom = rooms.value.firstOrNull { it.id == roomId } ?: room
-                    repository.ingestRemoteEncryptedMessage(latestRoom, config, incoming)
+        viewModelScope.launch {
+            repository.pruneExpiredCallHistory()
+            val route = repository.evaluateBootState()
+            _bootRoute.value = route
+            if (route == BootRoute.REINSTALL_RESTORED) {
+                postBanner("Existing Veil profile detected on this device and restored.")
+            }
+            checkForUpdates(silent = true)
+        }
+
+        // Automatically keep the active room synced with WebSocket realtime + polling fallback
+        viewModelScope.launch {
+            activeRoom.collect { room ->
+                if (room != null) {
+                    startRoomSyncLoop(room.id)
+                } else {
+                    stopRoomSyncLoop()
                 }
-        }
-    }
-
-    fun stopRoomSync() {
-        activeSyncJob?.cancel()
-        activeSyncJob = null
-        activeWsJob?.cancel()
-        activeWsJob = null
-        voiceManager.stopPlayback()
-        voiceManager.cancelRecording()
-    }
-
-    fun syncRoomNow(roomId: String) {
-        viewModelScope.launch {
-            repository.syncRoom(roomId)
-            showToast("Encrypted sync complete")
-        }
-    }
-
-    fun testConnectionDraft(draft: BackendProfileDraft) {
-        viewModelScope.launch {
-            _isBusy.value = true
-            _connectionTest.value = repository.testDraftConnection(draft)
-            _isBusy.value = false
-        }
-    }
-
-    fun testSavedProfile(profile: BackendProfileEntity) {
-        viewModelScope.launch {
-            _isBusy.value = true
-            val res = repository.testSavedProfile(profile)
-            _connectionTest.value = res
-            _isBusy.value = false
-            showToast(res.message)
-        }
-    }
-
-    fun saveBackendProfile(draft: BackendProfileDraft, onSaved: () -> Unit = {}) {
-        viewModelScope.launch {
-            _isBusy.value = true
-            val result = repository.saveBackendProfile(draft, makeActive = true)
-            _isBusy.value = false
-            result.onSuccess {
-                showToast("Saved ${it.name}")
-                onSaved()
-            }.onFailure {
-                showToast(it.message ?: "Invalid configuration")
             }
         }
     }
 
-    fun setActiveBackend(profileId: String) {
+    fun getLocalIdentity(): LocalIdentity = repository.getLocalIdentity()
+    fun getDeviceBindingId(): String = repository.getDeviceBindingId()
+
+    fun postBanner(message: String) {
+        _statusBanner.value = message
+    }
+
+    fun clearBanner() {
+        _statusBanner.value = null
+    }
+
+    fun updateOnboardingDraft(transform: (OnboardingDraft) -> OnboardingDraft) {
+        _onboardingDraft.value = transform(_onboardingDraft.value)
+    }
+
+    fun compressAndStoreAvatar(uri: Uri, onResult: (String) -> Unit) {
         viewModelScope.launch {
-            repository.setActiveBackendProfile(profileId)
-            showToast("Active backend switched")
+            val file = repository.mediaStorage.compressAvatarToJpeg512(uri)
+            if (file != null) {
+                onResult(file.absolutePath)
+            } else {
+                postBanner("Unable to process selected profile image.")
+            }
         }
     }
 
-    fun deleteBackend(profileId: String) {
-        viewModelScope.launch {
-            repository.deleteBackendProfile(profileId)
-            showToast("Backend profile removed")
-        }
-    }
+    fun createCameraCaptureTarget(): Pair<File, Uri> = repository.mediaStorage.createCameraPhotoTarget()
 
-    fun hostVeilRoom(draft: BackendProfileDraft, roomName: String) {
+    fun confirmAndBindProfile(onResult: (Result<Boolean>) -> Unit) {
+        val draft = _onboardingDraft.value
         viewModelScope.launch {
-            _isBusy.value = true
-            val result = repository.hostVeilRoom(draft, roomName)
-            _isBusy.value = false
-            result.onSuccess { outcome ->
-                _hostOutcome.value = outcome
-                showToast(outcome.note)
+            val res = repository.confirmAndBindProfile(
+                username = draft.username,
+                motto = draft.motto,
+                gender = draft.gender,
+                localPfpPath = draft.localPfpPath
+            )
+            res.onSuccess { (_, wasRestored) ->
+                if (wasRestored) {
+                    postBanner("Account already bound to this phone. Redirected to your existing profile.")
+                }
+                val roomsNow = repository.getAllRooms()
+                _bootRoute.value = if (roomsNow.isNotEmpty()) BootRoute.HOME else BootRoute.ROOM_GATEWAY
+                onResult(Result.success(wasRestored))
             }.onFailure { err ->
-                showToast(err.message ?: "Failed to host Veil Room")
+                postBanner(err.message ?: "Unable to bind profile.")
+                onResult(Result.failure(err))
             }
         }
     }
 
-    fun joinVeilRoom(
-        rawCode: String,
-        existingProfileId: String?,
-        inlineDraft: BackendProfileDraft?,
-        parsedInvite: ParsedRoomInvite?,
-        onJoined: (VeilRoomEntity) -> Unit
+    fun updateProfileAndSync(
+        username: String,
+        motto: String,
+        gender: String,
+        localPfpPath: String,
+        onComplete: (Result<Unit>) -> Unit
     ) {
         viewModelScope.launch {
-            _isBusy.value = true
-            val result = repository.joinVeilRoom(
-                rawVeilCode = rawCode,
-                existingProfileId = existingProfileId,
-                inlineDraft = inlineDraft,
-                parsedInvite = parsedInvite
-            )
-            _isBusy.value = false
-            result.onSuccess { room ->
-                showToast("Joined ${room.roomName} with E2EE")
-                onJoined(room)
+            val res = repository.updateLocalProfileAndSyncAllRooms(username, motto, gender, localPfpPath)
+            res.onSuccess {
+                postBanner("Profile updated and synced across your Veil rooms.")
+                onComplete(Result.success(Unit))
             }.onFailure { err ->
-                showToast(err.message ?: "Could not join Veil Room")
+                postBanner(err.message ?: "Failed to update profile.")
+                onComplete(Result.failure(err))
             }
         }
     }
 
-    fun sendText(roomId: String, text: String) {
+    // Theme customization
+    fun setAccentColor(color: Color) {
         viewModelScope.launch {
-            repository.sendTextMessage(roomId, text).onFailure {
-                showToast(it.message ?: "Failed to encrypt message")
-            }
+            themePreferences.saveAccentColor(color)
         }
     }
 
-    fun sendPickedMedia(roomId: String, uri: Uri, isVideo: Boolean) {
+    // Backend management
+    fun saveBackendProfile(draft: BackendProfileDraft, onComplete: (Result<BackendProfileEntity>) -> Unit) {
         viewModelScope.launch {
-            val type = if (isVideo) MessageContentType.VIDEO else MessageContentType.IMAGE
-            repository.sendMediaFromUri(roomId, uri, type).onFailure {
-                showToast(it.message ?: "Failed to attach media")
-            }
+            val res = repository.saveBackendProfile(draft, setActive = true)
+            onComplete(res)
         }
     }
 
-    fun sendPickedDocument(roomId: String, uri: Uri) {
+    fun testBackendDraft(draft: BackendProfileDraft, onResult: (ConnectionTestResult) -> Unit) {
         viewModelScope.launch {
-            repository.sendMediaFromUri(roomId, uri, MessageContentType.DOCUMENT).onFailure {
-                showToast(it.message ?: "Failed to attach document")
-            }
+            onResult(repository.testBackendDraft(draft))
         }
     }
 
-    fun sendManualLocation(roomId: String, lat: Double, lon: Double, label: String) {
+    fun testSavedBackendProfile(profile: BackendProfileEntity, onResult: (ConnectionTestResult) -> Unit) {
         viewModelScope.launch {
-            repository.sendLocation(roomId, lat, lon, label).onFailure {
-                showToast(it.message ?: "Failed to send location")
+            onResult(repository.testSavedBackendProfile(profile))
+        }
+    }
+
+    fun setActiveBackendProfile(profileId: String) {
+        viewModelScope.launch {
+            repository.setActiveBackendProfile(profileId)
+            postBanner("Active backend updated.")
+        }
+    }
+
+    fun deleteBackendProfile(profileId: String) {
+        viewModelScope.launch {
+            repository.deleteBackendProfile(profileId)
+            postBanner("Backend profile removed.")
+        }
+    }
+
+    // Room Host / Join / Switch
+    fun hostRoom(roomName: String, backendProfileId: String, onResult: (Result<HostRoomOutcome>) -> Unit) {
+        viewModelScope.launch {
+            val res = repository.hostRoom(roomName, backendProfileId)
+            if (res.isSuccess) {
+                _bootRoute.value = BootRoute.HOME
+            }
+            onResult(res)
+        }
+    }
+
+    fun joinRoom(
+        veilCode: String,
+        roomName: String,
+        backendProfileId: String,
+        hostPublicKey: String = "",
+        hostHandle: String = "",
+        roomKeyBase64: String = "",
+        onResult: (Result<VeilRoomEntity>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val res = repository.joinRoom(
+                veilCodeRaw = veilCode,
+                roomNameHint = roomName,
+                backendProfileId = backendProfileId,
+                hostPublicKey = hostPublicKey,
+                hostHandle = hostHandle,
+                roomKeyBase64 = roomKeyBase64
+            )
+            if (res.isSuccess) {
+                _bootRoute.value = BootRoute.HOME
+            }
+            onResult(res)
+        }
+    }
+
+    fun joinRoomFromInviteUri(inviteUri: String, onResult: (Result<VeilRoomEntity>) -> Unit) {
+        viewModelScope.launch {
+            val res = repository.joinRoomFromInviteUri(inviteUri)
+            if (res.isSuccess) {
+                _bootRoute.value = BootRoute.HOME
+            }
+            onResult(res)
+        }
+    }
+
+    fun switchActiveRoom(roomId: String) {
+        viewModelScope.launch {
+            repository.setActiveRoom(roomId)
+            postBanner("Switched active Veil Room.")
+        }
+    }
+
+    fun deleteRoom(roomId: String) {
+        viewModelScope.launch {
+            repository.deleteRoom(roomId)
+            val remaining = repository.getAllRooms()
+            if (remaining.isEmpty()) {
+                _bootRoute.value = BootRoute.ROOM_GATEWAY
             }
         }
     }
 
-    @SuppressLint("MissingPermission")
-    fun captureAndSendCurrentLocation(roomId: String, onFallbackNeeded: () -> Unit) {
-        val app = getApplication<Application>()
-        val fused = LocationServices.getFusedLocationProviderClient(app)
-        fused.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
-            .addOnSuccessListener { loc: Location? ->
-                if (loc != null) {
-                    sendManualLocation(roomId, loc.latitude, loc.longitude, "Current Location")
-                } else {
-                    val fallback = queryLastKnownSystemLocation(app)
-                    if (fallback != null) {
-                        sendManualLocation(roomId, fallback.latitude, fallback.longitude, "Last Known Location")
-                    } else {
-                        showToast("GPS signal unavailable — enter coordinates manually")
-                        onFallbackNeeded()
-                    }
-                }
-            }
-            .addOnFailureListener {
-                val fallback = queryLastKnownSystemLocation(app)
-                if (fallback != null) {
-                    sendManualLocation(roomId, fallback.latitude, fallback.longitude, "Last Known Location")
-                } else {
-                    showToast("Location unavailable — enter coordinates manually")
-                    onFallbackNeeded()
-                }
-            }
+    fun loadInviteUri(roomId: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            onResult(repository.buildInviteUriForRoom(roomId))
+        }
     }
 
-    @SuppressLint("MissingPermission")
-    private fun queryLastKnownSystemLocation(app: Application): Location? {
-        return runCatching {
-            val lm = app.getSystemService(LocationManager::class.java) ?: return null
-            lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-        }.getOrNull()
+    // Channel observations
+    fun observeMessages(roomId: String, channelType: ChannelType, targetId: String): Flow<List<MessageEntity>> =
+        repository.observeMessagesForChannel(roomId, channelType, targetId)
+
+    fun observeMember(roomId: String, publicKey: String): Flow<RoomMemberEntity?> =
+        repository.observeRoomMember(roomId, publicKey)
+
+    fun observeCommunity(communityId: String): Flow<CommunityEntity?> =
+        repository.observeCommunityById(communityId)
+
+    fun observeCommunityMembers(communityId: String): Flow<List<CommunityMemberEntity>> =
+        repository.observeCommunityMembers(communityId)
+
+    // Moderation & Profiles
+    fun toggleMuteMember(roomId: String, peerPublicKey: String, muted: Boolean) {
+        viewModelScope.launch {
+            repository.setMemberMuted(roomId, peerPublicKey, muted)
+            postBanner(if (muted) "Profile muted." else "Profile unmuted.")
+        }
+    }
+
+    fun toggleBlockMember(roomId: String, peerPublicKey: String, blocked: Boolean) {
+        viewModelScope.launch {
+            repository.setMemberBlocked(roomId, peerPublicKey, blocked)
+            postBanner(if (blocked) "Profile blocked." else "Profile unblocked.")
+        }
+    }
+
+    fun setMemberVerified(roomId: String, peerPublicKey: String, verified: Boolean) {
+        viewModelScope.launch {
+            repository.setMemberVerified(roomId, peerPublicKey, verified)
+            postBanner(if (verified) "Safety number verified." else "Verification cleared.")
+        }
+    }
+
+    fun reportMember(roomId: String, reportedPublicKey: String, reason: String, notes: String) {
+        viewModelScope.launch {
+            repository.reportMember(roomId, reportedPublicKey, reason, notes)
+                .onSuccess { postBanner("Report submitted for moderation.") }
+                .onFailure { postBanner("Unable to submit report: ${it.message}") }
+        }
+    }
+
+    fun clearDirectUnread(roomId: String, peerPublicKey: String) {
+        viewModelScope.launch { repository.clearDirectUnread(roomId, peerPublicKey) }
+    }
+
+    fun clearCommunityUnread(communityId: String) {
+        viewModelScope.launch { repository.clearCommunityUnread(communityId) }
+    }
+
+    // Communities (Strict minimum 3 profiles total)
+    fun createPrivateCommunity(
+        roomId: String,
+        name: String,
+        description: String,
+        selectedPeerPublicKeys: List<String>,
+        onResult: (Result<CommunityEntity>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val res = repository.createPrivateCommunity(roomId, name, description, selectedPeerPublicKeys)
+            res.onSuccess { postBanner("Private community '${it.name}' created.") }
+                .onFailure { postBanner(it.message ?: "Unable to create community.") }
+            onResult(res)
+        }
+    }
+
+    // Messaging & Disappearing Views
+    fun sendText(roomId: String, channelType: ChannelType, targetId: String, text: String, maxViews: Int) {
+        viewModelScope.launch {
+            repository.sendTextMessage(roomId, channelType, targetId, text, maxViews)
+                .onFailure { postBanner(it.message ?: "Unable to send message.") }
+        }
+    }
+
+    fun sendMediaUri(
+        roomId: String,
+        channelType: ChannelType,
+        targetId: String,
+        uri: Uri,
+        preferredType: MessageContentType,
+        maxViews: Int
+    ) {
+        viewModelScope.launch {
+            repository.sendMediaFromUri(roomId, channelType, targetId, uri, preferredType, maxViews)
+                .onFailure { postBanner(it.message ?: "Unable to encrypt and send file.") }
+        }
+    }
+
+    fun sendCapturedPhoto(
+        roomId: String,
+        channelType: ChannelType,
+        targetId: String,
+        file: File,
+        maxViews: Int
+    ) {
+        viewModelScope.launch {
+            repository.sendCapturedCameraPhoto(roomId, channelType, targetId, file, maxViews)
+                .onFailure { postBanner(it.message ?: "Unable to send photo.") }
+        }
     }
 
     fun startVoiceRecording() {
         val target = repository.mediaStorage.createVoiceNoteTarget()
-        voiceManager.startRecording(target).onFailure {
-            showToast("Could not start microphone recording")
+        voiceManager.startRecording(target)
+            .onFailure { postBanner("Microphone unavailable: ${it.message}") }
+    }
+
+    fun stopAndSendVoiceNote(roomId: String, channelType: ChannelType, targetId: String, maxViews: Int) {
+        val completed = voiceManager.stopAndFinalizeRecording() ?: return
+        viewModelScope.launch {
+            repository.sendVoiceNote(
+                roomId = roomId,
+                channelType = channelType,
+                targetId = targetId,
+                voiceFile = completed.file,
+                durationMs = completed.durationMs,
+                peaks = completed.peaks,
+                maxViews = maxViews
+            ).onFailure { postBanner(it.message ?: "Unable to send voice note.") }
         }
     }
 
@@ -306,68 +467,164 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
         voiceManager.cancelRecording()
     }
 
-    fun finishAndSendVoiceRecording(roomId: String) {
-        val completed = voiceManager.stopAndFinalizeRecording() ?: return
+    fun sendLocation(
+        roomId: String,
+        channelType: ChannelType,
+        targetId: String,
+        lat: Double,
+        lng: Double,
+        label: String,
+        maxViews: Int
+    ) {
         viewModelScope.launch {
-            repository.sendVoiceNote(
-                roomId = roomId,
-                audioFile = completed.file,
-                durationMs = completed.durationMs,
-                waveformPeaks = completed.peaks
-            ).onFailure {
-                showToast(it.message ?: "Failed to send voice note")
-            }
+            repository.sendLocation(roomId, channelType, targetId, lat, lng, label, maxViews)
+                .onFailure { postBanner(it.message ?: "Unable to share location.") }
         }
     }
 
-    fun toggleVoicePlayback(message: MessageEntity) {
-        if (message.localMediaPath.isBlank()) {
-            showToast("Audio file not available locally")
+    fun consumeEphemeralView(messageId: String) {
+        viewModelScope.launch {
+            repository.consumeEphemeralView(messageId)
+        }
+    }
+
+    // Voice-Only Calls
+    fun startVoiceCall(member: RoomMemberEntity) {
+        val room = activeRoom.value ?: return
+        if (member.isBlocked) {
+            postBanner("Unblock ${member.username} before placing a voice call.")
             return
         }
-        voiceManager.togglePlayback(message.id, message.localMediaPath)
+        voiceCallController.startOutgoingCall(
+            roomId = room.id,
+            roomCode = room.veilCode,
+            roomName = room.roomName,
+            peerPublicKey = member.publicKey,
+            peerUsername = member.username,
+            peerPfpPath = member.localPfpPath
+        )
     }
 
-    fun seekVoicePlayback(messageId: String, fraction: Float) {
-        voiceManager.seekPlayback(messageId, fraction)
+    fun startVoiceCallByKey(peerPublicKey: String, peerUsername: String, peerPfpPath: String) {
+        val room = activeRoom.value ?: return
+        voiceCallController.startOutgoingCall(
+            roomId = room.id,
+            roomCode = room.veilCode,
+            roomName = room.roomName,
+            peerPublicKey = peerPublicKey,
+            peerUsername = peerUsername,
+            peerPfpPath = peerPfpPath
+        )
     }
 
-    fun setRoomVerified(roomId: String, verified: Boolean) {
+    fun markMissedCallsSeen(roomId: String) {
+        viewModelScope.launch { repository.markMissedCallsSeen(roomId) }
+    }
+
+    // Updates
+    fun checkForUpdates(silent: Boolean = false) {
         viewModelScope.launch {
-            repository.setRoomVerified(roomId, verified)
-            showToast(if (verified) "Safety number verified" else "Verification cleared")
-        }
-    }
-
-    fun deleteRoom(roomId: String, onDeleted: () -> Unit = {}) {
-        viewModelScope.launch {
-            repository.deleteRoom(roomId)
-            showToast("Veil Room removed")
-            onDeleted()
-        }
-    }
-
-    fun buildRoomInviteUri(room: VeilRoomEntity, onReady: (String) -> Unit) {
-        viewModelScope.launch {
-            val uri = repository.buildInviteUriForRoom(room)
-            if (uri != null) {
-                onReady(uri)
-            } else {
-                showToast("Backend configuration missing for this room")
+            _isCheckingUpdate.value = true
+            val res = updateManager.checkForUpdate()
+            _isCheckingUpdate.value = false
+            res.onSuccess { info ->
+                _availableUpdate.value = info
+                if (!silent && info == null) {
+                    postBanner("Veil is up to date.")
+                }
+            }.onFailure { err ->
+                if (!silent) {
+                    postBanner(err.message ?: "Unable to check for updates.")
+                }
             }
         }
     }
 
-    fun parseRoomInvite(raw: String): ParsedRoomInvite? = repository.crypto.parseRoomInviteUri(raw)
+    fun dismissUpdateDialog() {
+        _availableUpdate.value = null
+    }
 
-    fun formatVeilCode(raw: String): String = repository.crypto.formatVeilCode(raw)
+    fun startApkUpdateDownload(info: ReleaseUpdateInfo) {
+        if (!updateManager.canRequestPackageInstalls()) {
+            postBanner("Allow installing updates from Veil in Android settings, then tap Update Now again.")
+            updateManager.openInstallUnknownAppsSettings()
+            return
+        }
+        updateManager.downloadAndInstallApk(info) { status ->
+            postBanner(status)
+        }.onFailure { err ->
+            postBanner(err.message ?: "Update download failed.")
+        }
+    }
 
-    fun formatSafetyNumberGroups(safety60: String): List<String> =
-        repository.crypto.formatSafetyNumberGroups(safety60)
+    // Sync Loop (Realtime WebSocket + Polling Fallback)
+    fun manualSyncActiveRoom() {
+        val roomId = activeRoom.value?.id ?: return
+        viewModelScope.launch {
+            _isSyncing.value = true
+            runSyncOnce(roomId)
+            _isSyncing.value = false
+        }
+    }
+
+    private fun startRoomSyncLoop(roomId: String) {
+        stopRoomSyncLoop()
+        activeSyncJob = viewModelScope.launch {
+            while (isActive) {
+                runSyncOnce(roomId)
+                delay(4_500L)
+            }
+        }
+        realtimeJob = viewModelScope.launch {
+            val room = repository.getRoomById(roomId) ?: return@launch
+            val config = repository.resolveBackendConfigForRoom(room) ?: return@launch
+            runCatching {
+                repository.backendClient.observeRealtimePings(config, room.veilCode).collect {
+                    runSyncOnce(roomId)
+                }
+            }
+        }
+    }
+
+    private suspend fun runSyncOnce(roomId: String) {
+        repository.syncRoom(
+            roomId = roomId,
+            onNewMessageAlert = { alert ->
+                notificationHelper.showMessageNotification(
+                    notificationId = notifCounter++,
+                    title = alert.title,
+                    body = alert.body,
+                    roomId = alert.roomId,
+                    targetId = alert.targetId,
+                    isCommunity = alert.isCommunity
+                )
+            },
+            onIncomingCallSignal = { room, signal, peer ->
+                voiceCallController.handleIncomingSignal(
+                    roomId = room.id,
+                    roomCode = room.veilCode,
+                    roomName = room.roomName,
+                    signal = signal,
+                    peerUsername = peer?.username ?: "Veil Peer",
+                    peerPfpPath = peer?.localPfpPath.orEmpty(),
+                    isPeerMuted = peer?.isMuted ?: false,
+                    isPeerBlocked = peer?.isBlocked ?: false
+                )
+            }
+        )
+    }
+
+    private fun stopRoomSyncLoop() {
+        activeSyncJob?.cancel()
+        activeSyncJob = null
+        realtimeJob?.cancel()
+        realtimeJob = null
+    }
 
     override fun onCleared() {
-        super.onCleared()
-        stopRoomSync()
+        stopRoomSyncLoop()
         voiceManager.release()
+        voiceCallController.release()
+        super.onCleared()
     }
 }

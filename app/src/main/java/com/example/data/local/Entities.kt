@@ -20,6 +20,11 @@ enum class RoomRole {
     GUEST
 }
 
+enum class ChannelType {
+    DIRECT,
+    COMMUNITY
+}
+
 enum class MessageContentType {
     TEXT,
     IMAGE,
@@ -36,6 +41,26 @@ enum class SyncStatus {
     QUEUED_OFFLINE,
     FAILED
 }
+
+enum class CallDirection {
+    OUTGOING,
+    INCOMING,
+    MISSED
+}
+
+@Entity(tableName = "user_profile")
+data class UserProfileEntity(
+    @PrimaryKey val id: String = "local_user",
+    val deviceBindingId: String,
+    val publicKey: String,
+    val username: String,
+    val motto: String = "",
+    val gender: String = "Prefer not to say",
+    val localPfpPath: String = "",
+    val remotePfpCipherUrl: String = "",
+    val isBound: Boolean = false,
+    val updatedAt: Long = System.currentTimeMillis()
+)
 
 @Entity(tableName = "backend_profiles")
 data class BackendProfileEntity(
@@ -67,6 +92,7 @@ data class VeilRoomEntity(
     val roomName: String,
     val role: RoomRole,
     val backendProfileId: String,
+    val isActiveRoom: Boolean = false,
     val peerHandle: String = "",
     val peerPublicKey: String = "",
     val encryptedRoomKey: String = "",
@@ -78,10 +104,61 @@ data class VeilRoomEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "room_members")
+data class RoomMemberEntity(
+    @PrimaryKey val id: String,
+    val roomId: String,
+    val roomCode: String,
+    val deviceBindingId: String = "",
+    val publicKey: String,
+    val username: String,
+    val motto: String = "",
+    val gender: String = "Prefer not to say",
+    val localPfpPath: String = "",
+    val remotePfpCipherUrl: String = "",
+    val safetyNumber: String = "",
+    val isVerified: Boolean = false,
+    val isMuted: Boolean = false,
+    val isBlocked: Boolean = false,
+    val isOnline: Boolean = true,
+    val lastMessagePreview: String = "",
+    val lastMessageTimestamp: Long = 0L,
+    val unreadCount: Int = 0,
+    val joinedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "communities")
+data class CommunityEntity(
+    @PrimaryKey val id: String,
+    val roomId: String,
+    val roomCode: String,
+    val name: String,
+    val description: String = "",
+    val isDefault: Boolean = false,
+    val createdByPublicKey: String,
+    val encryptedCommunityKey: String = "",
+    val memberCount: Int = 1,
+    val lastMessagePreview: String = "",
+    val lastMessageTimestamp: Long = System.currentTimeMillis(),
+    val unreadCount: Int = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "community_members")
+data class CommunityMemberEntity(
+    @PrimaryKey val id: String,
+    val communityId: String,
+    val memberPublicKey: String,
+    val memberUsername: String = "",
+    val encryptedCommunityKey: String = ""
+)
+
 @Entity(tableName = "messages")
 data class MessageEntity(
     @PrimaryKey val id: String,
     val roomId: String,
+    val channelType: ChannelType = ChannelType.DIRECT,
+    val targetId: String = "",
     val isOutgoing: Boolean,
     val senderHandle: String,
     val senderPublicKey: String,
@@ -99,6 +176,22 @@ data class MessageEntity(
     val latitude: Double? = null,
     val longitude: Double? = null,
     val locationLabel: String = "",
+    val maxViews: Int = 0,
+    val viewsConsumed: Int = 0,
+    val isDisappeared: Boolean = false,
     val timestamp: Long = System.currentTimeMillis(),
     val syncStatus: SyncStatus = SyncStatus.PENDING
+)
+
+@Entity(tableName = "call_history")
+data class CallHistoryEntity(
+    @PrimaryKey val id: String,
+    val roomId: String,
+    val peerPublicKey: String,
+    val peerUsername: String,
+    val peerPfpPath: String = "",
+    val direction: CallDirection,
+    val durationSec: Long = 0L,
+    val timestamp: Long = System.currentTimeMillis(),
+    val isSeen: Boolean = false
 )

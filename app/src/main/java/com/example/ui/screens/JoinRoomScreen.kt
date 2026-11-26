@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.content.ClipboardManager
+import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -12,7 +15,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -44,7 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -62,12 +64,11 @@ import com.example.ui.components.GlassPrimaryButton
 import com.example.ui.components.GlassSecondaryButton
 import com.example.ui.components.GlassTextField
 import com.example.ui.components.QrScannerDialog
-import com.example.ui.theme.GlacierMint
-import com.example.ui.theme.GlacierMintContainer
 import com.example.ui.theme.GlassBorderTop
 import com.example.ui.theme.GlassSurfaceSubtle
 import com.example.ui.theme.IceCyan
 import com.example.ui.theme.JetBrainsMonoFamily
+import com.example.ui.theme.LocalVeilAccent
 import com.example.ui.theme.SlateMuted
 import com.example.ui.theme.SlateSecondary
 import com.example.ui.theme.SnowPrimary
@@ -76,13 +77,16 @@ import com.example.ui.theme.SnowPrimary
 fun JoinRoomScreen(
     viewModel: VeilViewModel,
     onBack: () -> Unit,
-    onJoinedRoom: (String) -> Unit
+    onJoinedRoom: () -> Unit
 ) {
+    BackHandler(onBack = onBack)
+
+    val context = LocalContext.current
+    val accent = LocalVeilAccent.current
     val profiles by viewModel.backendProfiles.collectAsStateWithLifecycle()
-    val isBusy by viewModel.isBusy.collectAsStateWithLifecycle()
-    val clipboard = LocalClipboardManager.current
 
     var rawCode by remember { mutableStateOf("") }
+    var rawInviteUri by remember { mutableStateOf("") }
     var parsedInvite by remember { mutableStateOf<ParsedRoomInvite?>(null) }
     var selectedProfileId by remember(profiles) {
         mutableStateOf(profiles.firstOrNull { it.isActive }?.id ?: profiles.firstOrNull()?.id)
@@ -93,24 +97,28 @@ fun JoinRoomScreen(
     var baseUrl by remember { mutableStateOf("") }
     var apiKey by remember { mutableStateOf("") }
     var showScanner by remember { mutableStateOf(false) }
+    var isBusy by remember { mutableStateOf(false) }
 
     fun applyInviteString(raw: String) {
-        val invite = viewModel.parseRoomInvite(raw)
+        val invite = viewModel.repository.crypto.parseRoomInviteUri(raw)
         if (invite != null) {
             parsedInvite = invite
+            rawInviteUri = raw.trim()
             rawCode = invite.veilCode
             backendType = invite.backendType
             baseUrl = invite.baseUrl
             apiKey = invite.apiKey
             showManualBackend = false
-            viewModel.showToast("Loaded invite for ${invite.roomName}")
+            viewModel.postBanner("Loaded invite for ${invite.roomName}.")
         } else {
             val digitsOnly = raw.filter { it.isDigit() }
             if (digitsOnly.length == 12) {
                 rawCode = digitsOnly
-                viewModel.showToast("12-digit Veil Code pasted")
+                parsedInvite = null
+                rawInviteUri = ""
+                viewModel.postBanner("12-digit Veil Code pasted.")
             } else {
-                viewModel.showToast("No valid Veil Code or Room Invite found")
+                viewModel.postBanner("No valid Veil Code or Room Invite found.")
             }
         }
     }
@@ -159,7 +167,6 @@ fun JoinRoomScreen(
                     .padding(horizontal = 20.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // Hero 12-Digit Veil Code Card
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
                     borderTopColor = IceCyan.copy(alpha = 0.3f),
@@ -177,7 +184,6 @@ fun JoinRoomScreen(
                             )
                         )
 
-                        // Formatted 3x4 monospace display preview
                         val padded = rawCode.filter { it.isDigit() }.take(12).padEnd(12, '•')
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -197,7 +203,7 @@ fun JoinRoomScreen(
                                         text = block,
                                         style = MaterialTheme.typography.titleLarge.copy(
                                             fontFamily = JetBrainsMonoFamily,
-                                            color = if (block.contains('•')) SlateMuted else GlacierMint,
+                                            color = if (block.contains('•')) SlateMuted else accent.highlight,
                                             fontWeight = FontWeight.SemiBold,
                                             letterSpacing = 2.sp
                                         ),
@@ -213,6 +219,7 @@ fun JoinRoomScreen(
                                 rawCode = input.filter { it.isDigit() }.take(12)
                                 if (parsedInvite != null && parsedInvite?.veilCode != rawCode) {
                                     parsedInvite = null
+                                    rawInviteUri = ""
                                 }
                             },
                             label = "12-Digit Veil Code",
@@ -238,7 +245,8 @@ fun JoinRoomScreen(
                                 text = "Paste Invite",
                                 icon = Icons.Rounded.ContentPaste,
                                 onClick = {
-                                    val pasted = clipboard.getText()?.text.orEmpty()
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val pasted = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
                                     applyInviteString(pasted)
                                 },
                                 modifier = Modifier.weight(1f),
@@ -248,15 +256,14 @@ fun JoinRoomScreen(
                     }
                 }
 
-                // Loaded Invite indicator OR Backend Selection
                 if (parsedInvite != null) {
                     val inv = parsedInvite!!
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(16.dp))
-                            .background(GlacierMintContainer)
-                            .border(1.dp, GlacierMint.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
+                            .background(accent.container)
+                            .border(1.dp, accent.highlight.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -264,7 +271,7 @@ fun JoinRoomScreen(
                         Icon(
                             imageVector = Icons.Rounded.CheckCircle,
                             contentDescription = null,
-                            tint = GlacierMint,
+                            tint = accent.highlight,
                             modifier = Modifier.size(18.dp)
                         )
                         Column(modifier = Modifier.weight(1f)) {
@@ -273,7 +280,7 @@ fun JoinRoomScreen(
                                 style = MaterialTheme.typography.titleSmall.copy(color = SnowPrimary)
                             )
                             Text(
-                                text = "Host key & endpoint loaded automatically from invite",
+                                text = "Host key and endpoint loaded automatically from invite",
                                 style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
                             )
                         }
@@ -300,7 +307,7 @@ fun JoinRoomScreen(
                                         text = if (profiles.isNotEmpty() && !showManualBackend) {
                                             "Using saved backend: ${profiles.firstOrNull { it.id == selectedProfileId }?.name ?: profiles.first().name}"
                                         } else {
-                                            "Enter the host's Supabase or self-hosted URL & API key"
+                                            "Enter the host's Supabase or self-hosted URL and API key"
                                         },
                                         style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
                                     )
@@ -323,10 +330,10 @@ fun JoinRoomScreen(
                                             modifier = Modifier
                                                 .weight(1f)
                                                 .clip(RoundedCornerShape(12.dp))
-                                                .background(if (active) GlacierMintContainer else GlassSurfaceSubtle)
+                                                .background(if (active) accent.container else GlassSurfaceSubtle)
                                                 .border(
                                                     1.dp,
-                                                    if (active) GlacierMint.copy(alpha = 0.45f) else GlassBorderTop,
+                                                    if (active) accent.highlight.copy(alpha = 0.45f) else GlassBorderTop,
                                                     RoundedCornerShape(12.dp)
                                                 )
                                                 .clickable { selectedProfileId = p.id }
@@ -336,7 +343,7 @@ fun JoinRoomScreen(
                                             Text(
                                                 text = p.name,
                                                 style = MaterialTheme.typography.labelMedium.copy(
-                                                    color = if (active) GlacierMint else SlateSecondary
+                                                    color = if (active) accent.highlight else SlateSecondary
                                                 ),
                                                 maxLines = 1
                                             )
@@ -354,11 +361,7 @@ fun JoinRoomScreen(
                                     GlassTextField(
                                         value = baseUrl,
                                         onValueChange = { baseUrl = it },
-                                        label = if (backendType == BackendType.SUPABASE) {
-                                            "Host Supabase URL"
-                                        } else {
-                                            "Host Server URL"
-                                        },
+                                        label = if (backendType == BackendType.SUPABASE) "Host Supabase URL" else "Host Server URL",
                                         placeholder = if (backendType == BackendType.SUPABASE) {
                                             "https://your-project.supabase.co"
                                         } else {
@@ -371,12 +374,7 @@ fun JoinRoomScreen(
                                     GlassTextField(
                                         value = apiKey,
                                         onValueChange = { apiKey = it },
-                                        label = if (backendType == BackendType.SUPABASE) {
-                                            "Supabase API Key"
-                                        } else {
-                                            "Server Token / API Key"
-                                        },
-                                        placeholder = "API key or token",
+                                        label = if (backendType == BackendType.SUPABASE) "Supabase API Key" else "Server Token / API Key",
                                         isSecret = true,
                                         monospace = true,
                                         tag = "join_backend_key_input"
@@ -393,23 +391,51 @@ fun JoinRoomScreen(
                     icon = if (isBusy) null else Icons.Rounded.Key,
                     enabled = !isBusy && codeReady,
                     onClick = {
-                        val inlineDraft = if (parsedInvite == null && baseUrl.isNotBlank()) {
-                            BackendProfileDraft(
-                                name = if (backendType == BackendType.SUPABASE) "Shared Supabase" else "Shared Homelab",
-                                backendType = backendType,
-                                baseUrl = baseUrl,
-                                apiKey = apiKey,
-                                authType = AuthType.BEARER
-                            )
-                        } else null
-
-                        viewModel.joinVeilRoom(
-                            rawCode = rawCode,
-                            existingProfileId = if (inlineDraft == null) selectedProfileId else null,
-                            inlineDraft = inlineDraft,
-                            parsedInvite = parsedInvite
-                        ) { joinedRoom ->
-                            onJoinedRoom(joinedRoom.id)
+                        isBusy = true
+                        if (parsedInvite != null && rawInviteUri.isNotBlank()) {
+                            viewModel.joinRoomFromInviteUri(rawInviteUri) { res ->
+                                isBusy = false
+                                res.onSuccess { onJoinedRoom() }
+                                    .onFailure { viewModel.postBanner(it.message ?: "Unable to join room.") }
+                            }
+                        } else if (baseUrl.isNotBlank()) {
+                            viewModel.saveBackendProfile(
+                                BackendProfileDraft(
+                                    name = if (backendType == BackendType.SUPABASE) "Shared Supabase" else "Shared Server",
+                                    backendType = backendType,
+                                    baseUrl = baseUrl,
+                                    apiKey = apiKey,
+                                    authType = AuthType.BEARER
+                                )
+                            ) { savedRes ->
+                                savedRes.onSuccess { savedBackend ->
+                                    viewModel.joinRoom(
+                                        veilCode = rawCode,
+                                        roomName = "Veil Room",
+                                        backendProfileId = savedBackend.id
+                                    ) { joinRes ->
+                                        isBusy = false
+                                        joinRes.onSuccess { onJoinedRoom() }
+                                            .onFailure { viewModel.postBanner(it.message ?: "Unable to join room.") }
+                                    }
+                                }.onFailure { err ->
+                                    isBusy = false
+                                    viewModel.postBanner(err.message ?: "Invalid server URL.")
+                                }
+                            }
+                        } else if (!selectedProfileId.isNullOrBlank()) {
+                            viewModel.joinRoom(
+                                veilCode = rawCode,
+                                roomName = "Veil Room",
+                                backendProfileId = selectedProfileId!!
+                            ) { joinRes ->
+                                isBusy = false
+                                joinRes.onSuccess { onJoinedRoom() }
+                                    .onFailure { viewModel.postBanner(it.message ?: "Unable to join room.") }
+                            }
+                        } else {
+                            isBusy = false
+                            viewModel.postBanner("Enter the host server URL or scan a Room QR invite.")
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -419,7 +445,7 @@ fun JoinRoomScreen(
                 if (isBusy) {
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(
-                            color = GlacierMint,
+                            color = accent.primary,
                             strokeWidth = 2.dp,
                             modifier = Modifier.size(22.dp)
                         )

@@ -1,12 +1,17 @@
 package com.example.data.local
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import java.io.File
+import java.io.RandomAccessFile
+import java.security.SecureRandom
 import java.util.UUID
+import kotlin.math.min
 
 data class StoredMediaFile(
     val file: File,
@@ -18,15 +23,52 @@ data class StoredMediaFile(
 class MediaVaultStorage(private val context: Context) {
 
     private val vaultDir: File by lazy {
-        File(context.filesDir, "vault_media").apply {
-            if (!exists()) mkdirs()
-        }
+        File(context.filesDir, "vault_media").apply { if (!exists()) mkdirs() }
+    }
+
+    private val cameraDir: File by lazy {
+        File(context.cacheDir, "camera_captures").apply { if (!exists()) mkdirs() }
     }
 
     fun createVoiceNoteTarget(): File {
         val file = File(vaultDir, "voice_${UUID.randomUUID()}.m4a")
-        ensureConfined(file)
+        ensureConfined(file, vaultDir)
         return file
+    }
+
+    fun createCameraPhotoTarget(): Pair<File, Uri> {
+        val file = File(cameraDir, "capture_${UUID.randomUUID()}.jpg")
+        ensureConfined(file, cameraDir)
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        return file to uri
+    }
+
+    fun compressAvatarToJpeg512(uri: Uri): File? {
+        return runCatching {
+            val rawBitmap = context.contentResolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(input)
+            } ?: return null
+
+            val side = min(rawBitmap.width, rawBitmap.height)
+            val startX = (rawBitmap.width - side) / 2
+            val startY = (rawBitmap.height - side) / 2
+            val square = Bitmap.createBitmap(rawBitmap, startX, startY, side, side)
+            val scaled = Bitmap.createScaledBitmap(square, 512, 512, true)
+
+            val dest = File(vaultDir, "pfp_${UUID.randomUUID()}.jpg")
+            ensureConfined(dest, vaultDir)
+            dest.outputStream().use { out ->
+                scaled.compress(Bitmap.CompressFormat.JPEG, 82, out)
+            }
+            if (square !== rawBitmap) square.recycle()
+            if (scaled !== square) scaled.recycle()
+            rawBitmap.recycle()
+            dest
+        }.getOrNull()
     }
 
     fun copyFromUri(uri: Uri, fallbackName: String = "attachment"): StoredMediaFile? {
@@ -39,18 +81,12 @@ class MediaVaultStorage(private val context: Context) {
                 .take(8)
                 .ifBlank { MimeTypeMap.getSingleton().getExtensionFromMimeType(mime).orEmpty() }
 
-            val targetName = if (safeExt.isNotBlank()) {
-                "${UUID.randomUUID()}.$safeExt"
-            } else {
-                UUID.randomUUID().toString()
-            }
+            val targetName = if (safeExt.isNotBlank()) "${UUID.randomUUID()}.$safeExt" else UUID.randomUUID().toString()
             val destFile = File(vaultDir, targetName)
-            ensureConfined(destFile)
+            ensureConfined(destFile, vaultDir)
 
             resolver.openInputStream(uri)?.use { input ->
-                destFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
+                destFile.outputStream().use { output -> input.copyTo(output) }
             } ?: return null
 
             StoredMediaFile(
@@ -62,39 +98,78 @@ class MediaVaultStorage(private val context: Context) {
         }.getOrNull()
     }
 
-    fun saveDecryptedMedia(
-        bytes: ByteArray,
-        displayName: String,
-        mimeType: String
-    ): File {
+    fun copyLocalFileToVault(source: File, displayName: String, mimeType: String): StoredMediaFile? {
+        return runCatching {
+            if (!source.exists()) return null
+            val ext = displayName.substringAfterLast('.', "jpg").filter { it.isLetterOrDigit() }.take(8)
+            val dest = File(vaultDir, "${UUID.randomUUID()}.$ext")
+            ensureConfined(dest, vaultDir)
+            source.copyTo(dest, overwrite = true)
+            StoredMediaFile(dest, sanitizeDisplayName(displayName), mimeType, dest.length())
+        }.getOrNull()
+    }
+
+    fun saveDecryptedMedia(bytes: ByteArray, displayName: String, mimeType: String): File {
         val ext = displayName.substringAfterLast('.', "")
             .filter { it.isLetterOrDigit() }
             .take(8)
             .ifBlank { MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType).orEmpty() }
         val fileName = if (ext.isNotBlank()) "${UUID.randomUUID()}.$ext" else UUID.randomUUID().toString()
         val destFile = File(vaultDir, fileName)
-        ensureConfined(destFile)
+        ensureConfined(destFile, vaultDir)
         destFile.writeBytes(bytes)
         return destFile
+    }
+
+    /**
+     * Overwrites an ephemeral decrypted file with zeros & random bytes before deletion.
+     */
+    fun secureWipeAndDelete(path: String) {
+        if (path.isBlank()) return
+        runCatching {
+            val file = File(path)
+            if (!file.exists()) return
+            ensureConfined(file, vaultDir)
+            val length = file.length()
+            if (length > 0L) {
+                val random = SecureRandom()
+                RandomAccessFile(file, "rws").use { raf ->
+                    raf.seek(0L)
+                    val chunk = ByteArray(8192)
+                    var remaining = length
+                    while (remaining > 0L) {
+                        val toWrite = min(remaining, chunk.size.toLong()).toInt()
+                        random.nextBytes(chunk)
+                        raf.write(chunk, 0, toWrite)
+                        remaining -= toWrite
+                    }
+                    raf.seek(0L)
+                    chunk.fill(0)
+                    remaining = length
+                    while (remaining > 0L) {
+                        val toWrite = min(remaining, chunk.size.toLong()).toInt()
+                        raf.write(chunk, 0, toWrite)
+                        remaining -= toWrite
+                    }
+                }
+            }
+            file.delete()
+        }
     }
 
     fun getFileProviderUri(path: String): Uri? {
         val file = File(path)
         if (!file.exists()) return null
-        ensureConfined(file)
-        return FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file
-        )
+        ensureConfined(file, vaultDir)
+        return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
     }
 
     fun readTextPreview(path: String, maxBytes: Int = 64 * 1024): String? {
         return runCatching {
             val file = File(path)
             if (!file.exists()) return null
-            ensureConfined(file)
-            val len = minOf(file.length(), maxBytes.toLong()).toInt()
+            ensureConfined(file, vaultDir)
+            val len = min(file.length(), maxBytes.toLong()).toInt()
             val buffer = ByteArray(len)
             file.inputStream().use { it.read(buffer) }
             String(buffer, Charsets.UTF_8)
@@ -103,18 +178,13 @@ class MediaVaultStorage(private val context: Context) {
 
     private fun queryDisplayName(uri: Uri): String? {
         return runCatching {
-            context.contentResolver.query(
-                uri,
-                arrayOf(OpenableColumns.DISPLAY_NAME),
-                null,
-                null,
-                null
-            )?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (idx >= 0) cursor.getString(idx) else null
-                } else null
-            }
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0) cursor.getString(idx) else null
+                    } else null
+                }
         }.getOrNull()
     }
 
@@ -123,15 +193,14 @@ class MediaVaultStorage(private val context: Context) {
         return if (!ext.isNullOrBlank()) "$prefix.$ext" else prefix
     }
 
-    private fun sanitizeDisplayName(raw: String): String {
-        return raw.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(80).ifBlank { "file" }
-    }
+    private fun sanitizeDisplayName(raw: String): String =
+        raw.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(80).ifBlank { "file" }
 
-    private fun ensureConfined(file: File) {
-        val baseCanonical = vaultDir.canonicalPath
+    private fun ensureConfined(file: File, baseDir: File) {
+        val baseCanonical = baseDir.canonicalPath
         val targetCanonical = file.canonicalPath
         require(targetCanonical.startsWith(baseCanonical + File.separator)) {
-            "File path escapes app-private media vault"
+            "File path escapes app-private directory"
         }
     }
 }

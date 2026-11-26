@@ -1,37 +1,33 @@
 package com.example.ui.components
 
-import android.content.Intent
-import android.net.Uri
-import android.widget.MediaController
-import android.widget.VideoView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Done
+import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.LocationOn
-import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,72 +38,365 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.example.data.local.MessageContentType
 import com.example.data.local.MessageEntity
+import com.example.data.local.SyncStatus
 import com.example.media.VoicePlaybackState
-import com.example.ui.theme.GlacierMint
-import com.example.ui.theme.GlacierMintContainer
 import com.example.ui.theme.GlassBorderTop
+import com.example.ui.theme.GlassIncomingSurface
 import com.example.ui.theme.GlassSurfaceElevated
 import com.example.ui.theme.GlassSurfaceSubtle
-import com.example.ui.theme.IceCyan
 import com.example.ui.theme.JetBrainsMonoFamily
-import com.example.ui.theme.ObsidianBg
+import com.example.ui.theme.LocalVeilAccent
 import com.example.ui.theme.ObsidianDeep
 import com.example.ui.theme.SlateMuted
 import com.example.ui.theme.SlateSecondary
 import com.example.ui.theme.SnowPrimary
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
-fun ImageMessageContent(
+fun MessageBubbleCard(
     message: MessageEntity,
-    onOpenImage: (String) -> Unit
+    showSenderName: Boolean,
+    playbackState: VoicePlaybackState,
+    onOpenEphemeral: (MessageEntity) -> Unit,
+    onOpenMedia: (MessageEntity) -> Unit,
+    onOpenLocation: (Double, Double, String) -> Unit,
+    onToggleVoicePlay: (String, String) -> Unit,
+    onSeekVoice: (String, Float) -> Unit
 ) {
-    val file = remember(message.localMediaPath) {
-        if (message.localMediaPath.isNotBlank()) File(message.localMediaPath) else null
+    val accent = LocalVeilAccent.current
+    val isOutgoing = message.isOutgoing
+    val shape = RoundedCornerShape(
+        topStart = 20.dp,
+        topEnd = 20.dp,
+        bottomStart = if (isOutgoing) 20.dp else 6.dp,
+        bottomEnd = if (isOutgoing) 6.dp else 20.dp
+    )
+    val bgBrush = if (isOutgoing) {
+        Brush.verticalGradient(listOf(accent.outgoingBubble.copy(alpha = 0.28f), accent.outgoingBubble))
+    } else {
+        Brush.verticalGradient(listOf(GlassSurfaceElevated, GlassIncomingSurface))
     }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(
+    val borderColor = if (isOutgoing) accent.outgoingBorder else GlassBorderTop
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isOutgoing) Alignment.End else Alignment.Start
+    ) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(190.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(GlassSurfaceSubtle)
-                .border(1.dp, GlassBorderTop, RoundedCornerShape(14.dp))
-                .clickable(enabled = file != null && file.exists()) {
-                    onOpenImage(message.localMediaPath)
-                },
-            contentAlignment = Alignment.Center
+                .widthIn(min = 96.dp, max = 304.dp)
+                .clip(shape)
+                .background(bgBrush, shape)
+                .border(1.dp, borderColor, shape)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            if (file != null && file.exists()) {
-                AsyncImage(
-                    model = file,
-                    contentDescription = message.fileName.ifBlank { "Encrypted photo" },
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+            if (showSenderName && !isOutgoing) {
+                Text(
+                    text = message.senderHandle,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        color = accent.highlight,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
+
+            // Ephemeral / Disappearing message state handling (1x or 2x views)
+            if (message.maxViews > 0) {
+                EphemeralMessageBubbleBody(
+                    message = message,
+                    onTapOpen = { onOpenEphemeral(message) }
                 )
             } else {
+                when (message.contentType) {
+                    MessageContentType.TEXT -> {
+                        Text(
+                            text = message.decryptedText.ifBlank { "[Encrypted payload]" },
+                            style = MaterialTheme.typography.bodyMedium.copy(color = SnowPrimary)
+                        )
+                    }
+
+                    MessageContentType.IMAGE -> {
+                        val file = remember(message.localMediaPath) {
+                            message.localMediaPath.takeIf { it.isNotBlank() }?.let { File(it) }?.takeIf { it.exists() }
+                        }
+                        if (file != null) {
+                            AsyncImage(
+                                model = file,
+                                contentDescription = message.fileName.ifBlank { "Encrypted photo" },
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(190.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable { onOpenMedia(message) }
+                            )
+                        } else {
+                            MediaFallbackTile(
+                                icon = Icons.Rounded.Description,
+                                title = message.fileName.ifBlank { "Encrypted Photo" },
+                                subtitle = formatBytes(message.fileSizeBytes),
+                                onClick = { onOpenMedia(message) }
+                            )
+                        }
+                    }
+
+                    MessageContentType.VIDEO -> {
+                        MediaFallbackTile(
+                            icon = Icons.Rounded.Videocam,
+                            title = message.fileName.ifBlank { "Encrypted Video" },
+                            subtitle = "Tap to play · ${formatBytes(message.fileSizeBytes)}",
+                            onClick = { onOpenMedia(message) }
+                        )
+                    }
+
+                    MessageContentType.DOCUMENT -> {
+                        MediaFallbackTile(
+                            icon = Icons.Rounded.Description,
+                            title = message.fileName.ifBlank { "Encrypted File" },
+                            subtitle = "${message.mimeType.ifBlank { "Document" }} · ${formatBytes(message.fileSizeBytes)}",
+                            onClick = { onOpenMedia(message) }
+                        )
+                    }
+
+                    MessageContentType.LOCATION -> {
+                        val lat = message.latitude ?: 0.0
+                        val lng = message.longitude ?: 0.0
+                        val label = message.locationLabel.ifBlank { "Shared Location" }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(GlassSurfaceSubtle)
+                                .clickable { onOpenLocation(lat, lng, label) }
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(accent.container),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.LocationOn,
+                                    contentDescription = null,
+                                    tint = accent.highlight,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelLarge.copy(color = SnowPrimary),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "%.5f, %.5f".format(lat, lng),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = JetBrainsMonoFamily,
+                                        color = SlateSecondary
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    MessageContentType.VOICE -> {
+                        VoiceNoteBubbleBody(
+                            message = message,
+                            playbackState = playbackState,
+                            onTogglePlay = {
+                                if (message.localMediaPath.isNotBlank()) {
+                                    onToggleVoicePlay(message.id, message.localMediaPath)
+                                }
+                            },
+                            onSeek = { frac -> onSeekVoice(message.id, frac) }
+                        )
+                    }
+                }
+            }
+
+            // Timestamp + sync ticks
+            Row(
+                modifier = Modifier.align(Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 Text(
-                    text = "Encrypted photo",
-                    style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
+                    text = formatMessageTime(message.timestamp),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = JetBrainsMonoFamily,
+                        color = SlateMuted
+                    )
+                )
+                if (isOutgoing) {
+                    val tickIcon = when (message.syncStatus) {
+                        SyncStatus.SENT, SyncStatus.SYNCED -> Icons.Rounded.DoneAll
+                        SyncStatus.PENDING -> Icons.Rounded.Done
+                        else -> Icons.Rounded.Schedule
+                    }
+                    Icon(
+                        imageVector = tickIcon,
+                        contentDescription = message.syncStatus.name,
+                        tint = if (message.syncStatus == SyncStatus.SENT || message.syncStatus == SyncStatus.SYNCED) {
+                            accent.highlight
+                        } else SlateMuted,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EphemeralMessageBubbleBody(
+    message: MessageEntity,
+    onTapOpen: () -> Unit
+) {
+    val accent = LocalVeilAccent.current
+    val remaining = (message.maxViews - message.viewsConsumed).coerceAtLeast(0)
+    val disappeared = message.isDisappeared || remaining == 0
+
+    if (disappeared) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(GlassSurfaceSubtle)
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.VisibilityOff,
+                contentDescription = null,
+                tint = SlateMuted,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = "Opened · Disappeared",
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = SlateMuted,
+                    fontStyle = FontStyle.Italic
+                ),
+                modifier = Modifier.testTag("ephemeral_disappeared_${message.id}")
+            )
+        }
+    } else {
+        val noun = when (message.contentType) {
+            MessageContentType.IMAGE -> "Photo"
+            MessageContentType.VIDEO -> "Video"
+            MessageContentType.VOICE -> "Voice Note"
+            MessageContentType.DOCUMENT -> "File"
+            MessageContentType.LOCATION -> "Location"
+            MessageContentType.TEXT -> "Message"
+        }
+        val title = if (message.maxViews == 1) "View-Once $noun" else "${message.maxViews}-View $noun"
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(accent.container)
+                .border(1.dp, accent.highlight.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                .clickable(onClick = onTapOpen)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .testTag("ephemeral_locked_${message.id}"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(accent.primary),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Lock,
+                    contentDescription = null,
+                    tint = ObsidianDeep,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        color = SnowPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                Text(
+                    text = if (remaining == 1) "Tap to open · 1 view remaining" else "Tap to open · $remaining views remaining",
+                    style = MaterialTheme.typography.labelSmall.copy(color = accent.highlight)
                 )
             }
         }
-        if (message.fileName.isNotBlank()) {
+    }
+}
+
+@Composable
+private fun MediaFallbackTile(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    val accent = LocalVeilAccent.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(GlassSurfaceSubtle)
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(accent.container),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = accent.highlight,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = message.fileName,
+                text = title,
+                style = MaterialTheme.typography.labelLarge.copy(color = SnowPrimary),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
                 style = MaterialTheme.typography.labelSmall.copy(color = SlateSecondary),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -117,300 +406,72 @@ fun ImageMessageContent(
 }
 
 @Composable
-fun VideoMessageContent(
-    message: MessageEntity,
-    onOpenVideo: (String) -> Unit
-) {
-    val hasLocal = message.localMediaPath.isNotBlank() && File(message.localMediaPath).exists()
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(150.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(ObsidianDeep)
-            .border(1.dp, GlassBorderTop, RoundedCornerShape(14.dp))
-            .clickable(enabled = hasLocal) { onOpenVideo(message.localMediaPath) },
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(12.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(GlacierMintContainer)
-                    .border(1.dp, GlacierMint.copy(alpha = 0.5f), CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.PlayArrow,
-                    contentDescription = "Play video",
-                    tint = GlacierMint,
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Videocam,
-                    contentDescription = null,
-                    tint = SlateSecondary,
-                    modifier = Modifier.size(14.dp)
-                )
-                Text(
-                    text = message.fileName.ifBlank { "Encrypted Video" },
-                    style = MaterialTheme.typography.bodySmall.copy(color = SnowPrimary),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            if (message.fileSizeBytes > 0L) {
-                Text(
-                    text = formatFileSize(message.fileSizeBytes),
-                    style = MaterialTheme.typography.labelSmall.copy(color = SlateMuted)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun DocumentMessageContent(
-    message: MessageEntity,
-    onOpenDocument: (MessageEntity) -> Unit
-) {
-    val ext = remember(message.fileName) {
-        message.fileName.substringAfterLast('.', "FILE").uppercase().take(5)
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(GlassSurfaceSubtle)
-            .border(1.dp, GlassBorderTop, RoundedCornerShape(14.dp))
-            .clickable { onOpenDocument(message) }
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(IceCyan.copy(alpha = 0.14f))
-                .border(1.dp, IceCyan.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = Icons.Rounded.Description,
-                    contentDescription = null,
-                    tint = IceCyan,
-                    modifier = Modifier.size(18.dp)
-                )
-                Text(
-                    text = ext,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = 9.sp,
-                        color = IceCyan,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                )
-            }
-        }
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = message.fileName.ifBlank { "Encrypted Document" },
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    color = SnowPrimary,
-                    fontWeight = FontWeight.Medium
-                ),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = "${formatFileSize(message.fileSizeBytes)} · Tap to open",
-                style = MaterialTheme.typography.labelSmall.copy(color = SlateSecondary)
-            )
-        }
-
-        Icon(
-            imageVector = Icons.Rounded.OpenInNew,
-            contentDescription = "Open document",
-            tint = SlateSecondary,
-            modifier = Modifier.size(16.dp)
-        )
-    }
-}
-
-@Composable
-fun LocationMessageContent(
-    message: MessageEntity
-) {
-    val context = LocalContext.current
-    val lat = message.latitude ?: 0.0
-    val lon = message.longitude ?: 0.0
-    val coords = remember(lat, lon) { "%.5f, %.5f".format(lat, lon) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(ObsidianDeep)
-            .border(1.dp, GlassBorderTop, RoundedCornerShape(14.dp))
-            .clickable {
-                val geoUri = Uri.parse("geo:$lat,$lon?q=$lat,$lon(${Uri.encode(message.locationLabel.ifBlank { "Shared Location" })})")
-                runCatching {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, geoUri))
-                }
-            }
-    ) {
-        // Minimalist dark vector radar grid card
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(104.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val step = 22.dp.toPx()
-                val gridColor = Color(0x16FFFFFF)
-                var x = step
-                while (x < size.width) {
-                    drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
-                    x += step
-                }
-                var y = step
-                while (y < size.height) {
-                    drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
-                    y += step
-                }
-                drawCircle(
-                    color = GlacierMint.copy(alpha = 0.16f),
-                    radius = 34.dp.toPx(),
-                    center = center
-                )
-                drawCircle(
-                    color = GlacierMint.copy(alpha = 0.34f),
-                    radius = 18.dp.toPx(),
-                    center = center
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(CircleShape)
-                    .background(GlacierMint)
-                    .padding(6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.LocationOn,
-                    contentDescription = "Shared location pin",
-                    tint = ObsidianDeep,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Text(
-                text = message.locationLabel.ifBlank { "Encrypted Location" },
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    color = SnowPrimary,
-                    fontWeight = FontWeight.Medium
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = coords,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontFamily = JetBrainsMonoFamily,
-                    color = GlacierMint
-                )
-            )
-        }
-    }
-}
-
-@Composable
-fun VoiceMessageContent(
+private fun VoiceNoteBubbleBody(
     message: MessageEntity,
     playbackState: VoicePlaybackState,
     onTogglePlay: () -> Unit,
     onSeek: (Float) -> Unit
 ) {
-    val isThisPlaying = playbackState.playingMessageId == message.id
-    val progress = if (isThisPlaying) playbackState.progress else 0f
+    val accent = LocalVeilAccent.current
+    val isThisPlaying = playbackState.playingMessageId == message.id && playbackState.isPlaying
+    val progress = if (playbackState.playingMessageId == message.id) playbackState.progress else 0f
     val peaks = remember(message.waveformPeaks) {
-        val parsed = message.waveformPeaks
-            .split(",")
+        message.waveformPeaks.split(",")
             .mapNotNull { it.trim().toIntOrNull() }
-        if (parsed.size >= 8) parsed else List(24) { 22 + (it * 19) % 68 }
-    }
-
-    val displayDurationMs = if (isThisPlaying && playbackState.isPlaying) {
-        playbackState.currentPositionMs
-    } else {
-        message.audioDurationMs.coerceAtLeast(1000L)
+            .ifEmpty { List(24) { 25 + (it * 17) % 60 } }
     }
 
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         IconButton(
             onClick = onTogglePlay,
             modifier = Modifier
-                .size(40.dp)
+                .size(38.dp)
                 .clip(CircleShape)
-                .background(GlacierMintContainer)
-                .border(1.dp, GlacierMint.copy(alpha = 0.45f), CircleShape)
+                .background(accent.primary)
         ) {
             Icon(
-                imageVector = if (isThisPlaying && playbackState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                contentDescription = if (isThisPlaying && playbackState.isPlaying) "Pause voice note" else "Play voice note",
-                tint = GlacierMint,
-                modifier = Modifier.size(22.dp)
+                imageVector = if (isThisPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                contentDescription = if (isThisPlaying) "Pause voice note" else "Play voice note",
+                tint = ObsidianDeep,
+                modifier = Modifier.size(20.dp)
             )
         }
 
-        Column(modifier = Modifier.weight(1f)) {
-            Row(
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(28.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    .height(28.dp)
+                    .pointerInput(message.id) {
+                        detectTapGestures { offset ->
+                            if (size.width > 0) {
+                                onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f))
+                            }
+                        }
+                    }
             ) {
-                peaks.forEachIndexed { idx, peak ->
-                    val frac = idx.toFloat() / peaks.size.coerceAtLeast(1).toFloat()
-                    val active = isThisPlaying && frac <= progress
-                    val barHeight = (6 + (peak * 0.22f)).dp.coerceIn(5.dp, 26.dp)
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(barHeight)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(if (active) GlacierMint else SlateMuted.copy(alpha = 0.55f))
-                            .clickable { onSeek(frac) }
+                val count = peaks.size
+                val barW = (size.width / (count * 1.6f)).coerceAtLeast(3f)
+                val gap = (size.width - count * barW) / (count - 1).coerceAtLeast(1)
+                peaks.forEachIndexed { index, amp ->
+                    val frac = index.toFloat() / count.toFloat()
+                    val h = (size.height * (amp / 100f)).coerceIn(6f, size.height)
+                    val x = index * (barW + gap)
+                    val y = (size.height - h) / 2f
+                    drawRoundRect(
+                        color = if (frac <= progress) accent.highlight else SlateMuted.copy(alpha = 0.55f),
+                        topLeft = Offset(x, y),
+                        size = Size(barW, h),
+                        cornerRadius = CornerRadius(barW / 2f, barW / 2f)
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = formatDurationMs(displayDurationMs),
+                text = formatAudioDuration(message.audioDurationMs),
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontFamily = JetBrainsMonoFamily,
                     color = SlateSecondary
@@ -420,173 +481,21 @@ fun VoiceMessageContent(
     }
 }
 
-@Composable
-fun FullScreenImageDialog(
-    filePath: String,
-    onDismiss: () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(ObsidianBg)
-                .statusBarsPadding()
-                .navigationBarsPadding()
-        ) {
-            AsyncImage(
-                model = File(filePath),
-                contentDescription = "Full screen encrypted photo",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
-            )
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(16.dp)
-                    .clip(CircleShape)
-                    .background(GlassSurfaceElevated)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Close,
-                    contentDescription = "Close image",
-                    tint = SnowPrimary
-                )
-            }
-        }
+private fun formatMessageTime(timestampMs: Long): String {
+    val fmt = SimpleDateFormat("HH:mm", Locale.getDefault())
+    return fmt.format(Date(timestampMs))
+}
+
+private fun formatAudioDuration(durationMs: Long): String {
+    val secs = (durationMs / 1000L).coerceAtLeast(1L)
+    return "%d:%02d".format(secs / 60L, secs % 60L)
+}
+
+private fun formatBytes(bytes: Long): String {
+    return when {
+        bytes <= 0L -> "Encrypted"
+        bytes < 1024L -> "$bytes B"
+        bytes < 1024L * 1024L -> "${bytes / 1024L} KB"
+        else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
     }
-}
-
-@Composable
-fun FullScreenVideoDialog(
-    filePath: String,
-    onDismiss: () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(ObsidianBg)
-                .statusBarsPadding()
-                .navigationBarsPadding()
-        ) {
-            AndroidView(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.Center),
-                factory = { ctx ->
-                    VideoView(ctx).apply {
-                        setVideoPath(filePath)
-                        val controller = MediaController(ctx)
-                        controller.setAnchorView(this)
-                        setMediaController(controller)
-                        setOnPreparedListener { start() }
-                    }
-                }
-            )
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(16.dp)
-                    .clip(CircleShape)
-                    .background(GlassSurfaceElevated)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Close,
-                    contentDescription = "Close video",
-                    tint = SnowPrimary
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun TextDocumentPreviewDialog(
-    title: String,
-    content: String,
-    onOpenExternal: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(ObsidianBg)
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium.copy(color = SnowPrimary),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                IconButton(onClick = onOpenExternal) {
-                    Icon(
-                        imageVector = Icons.Rounded.OpenInNew,
-                        contentDescription = "Open in external app",
-                        tint = GlacierMint
-                    )
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        imageVector = Icons.Rounded.Close,
-                        contentDescription = "Close document",
-                        tint = SnowPrimary
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(10.dp))
-            GlassCard(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            ) {
-                Text(
-                    text = content,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = JetBrainsMonoFamily,
-                        color = SnowPrimary,
-                        lineHeight = 19.sp
-                    ),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                )
-            }
-        }
-    }
-}
-
-fun formatFileSize(bytes: Long): String {
-    if (bytes <= 0L) return "0 B"
-    val kb = bytes / 1024.0
-    if (kb < 1024.0) return "%.1f KB".format(kb)
-    val mb = kb / 1024.0
-    return "%.2f MB".format(mb)
-}
-
-fun formatDurationMs(ms: Long): String {
-    val totalSec = (ms / 1000L).coerceAtLeast(0L)
-    val mins = totalSec / 60
-    val secs = totalSec % 60
-    return "%d:%02d".format(mins, secs)
 }

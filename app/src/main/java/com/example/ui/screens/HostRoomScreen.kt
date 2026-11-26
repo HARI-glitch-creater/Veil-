@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -54,19 +58,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.crypto.VeilCryptoEngine
 import com.example.data.BackendProfileDraft
 import com.example.data.HostRoomOutcome
 import com.example.data.local.AuthType
 import com.example.data.local.BackendType
+import com.example.data.network.ConnectionTestResult
 import com.example.data.network.VeilBackendClient
 import com.example.ui.VeilViewModel
 import com.example.ui.components.GlassCard
@@ -79,12 +85,10 @@ import com.example.ui.theme.AmberContainer
 import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.CoralContainer
 import com.example.ui.theme.CoralError
-import com.example.ui.theme.GlacierMint
-import com.example.ui.theme.GlacierMintContainer
 import com.example.ui.theme.GlassBorderTop
-import com.example.ui.theme.GlassSurfaceElevated
 import com.example.ui.theme.GlassSurfaceSubtle
 import com.example.ui.theme.JetBrainsMonoFamily
+import com.example.ui.theme.LocalVeilAccent
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SlateMuted
 import com.example.ui.theme.SlateSecondary
@@ -95,12 +99,13 @@ import com.example.ui.theme.SnowPrimary
 fun HostRoomScreen(
     viewModel: VeilViewModel,
     onBack: () -> Unit,
-    onEnterRoom: (String) -> Unit
+    onEnterRoom: () -> Unit
 ) {
-    val hostOutcome by viewModel.hostOutcome.collectAsStateWithLifecycle()
-    val connectionTest by viewModel.connectionTest.collectAsStateWithLifecycle()
-    val isBusy by viewModel.isBusy.collectAsStateWithLifecycle()
-    val clipboard = LocalClipboardManager.current
+    BackHandler(onBack = onBack)
+
+    val context = LocalContext.current
+    val accent = LocalVeilAccent.current
+    val savedProfiles by viewModel.backendProfiles.collectAsStateWithLifecycle()
 
     var selectedType by remember { mutableStateOf(BackendType.SUPABASE) }
     var roomName by remember { mutableStateOf("") }
@@ -109,7 +114,6 @@ fun HostRoomScreen(
     var apiKey by remember { mutableStateOf("") }
     var supabaseBucket by remember { mutableStateOf("veil-media") }
 
-    // Self-hosted optional advanced fields
     var showAdvanced by remember { mutableStateOf(false) }
     var authType by remember { mutableStateOf(AuthType.BEARER) }
     var authHeaderName by remember { mutableStateOf("X-API-Key") }
@@ -117,16 +121,22 @@ fun HostRoomScreen(
     var webSocketUrl by remember { mutableStateOf("") }
     var mediaUploadUrl by remember { mutableStateOf("") }
     var webhookUrl by remember { mutableStateOf("") }
-    var roomsPath by remember { mutableStateOf("/api/v1/rooms") }
-    var membersPath by remember { mutableStateOf("/api/v1/members") }
-    var messagesPath by remember { mutableStateOf("/api/v1/messages") }
-    var healthPath by remember { mutableStateOf("/api/v1/health") }
 
     var showSqlSheet by remember { mutableStateOf(false) }
+    var isBusy by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<ConnectionTestResult?>(null) }
+    var hostOutcome by remember { mutableStateOf<HostRoomOutcome?>(null) }
+
+    fun parseHeadersMap(raw: String): Map<String, String> =
+        raw.lines().mapNotNull { line ->
+            val idx = line.indexOf(':')
+            if (idx <= 0) null
+            else line.substring(0, idx).trim() to line.substring(idx + 1).trim()
+        }.filter { it.first.isNotBlank() && it.second.isNotBlank() }.toMap()
 
     fun buildDraft(): BackendProfileDraft = BackendProfileDraft(
         name = profileName.ifBlank {
-            if (selectedType == BackendType.SUPABASE) "My Supabase" else "Homelab Server"
+            if (selectedType == BackendType.SUPABASE) "My Supabase" else "Self-Hosted Server"
         },
         backendType = selectedType,
         baseUrl = baseUrl,
@@ -134,15 +144,18 @@ fun HostRoomScreen(
         supabaseBucket = supabaseBucket,
         authType = if (selectedType == BackendType.SUPABASE) AuthType.BEARER else authType,
         authHeaderName = authHeaderName,
-        customHeadersRaw = customHeadersRaw,
-        roomsPath = roomsPath,
-        membersPath = membersPath,
-        messagesPath = messagesPath,
-        healthPath = healthPath,
+        customHeaders = parseHeadersMap(customHeadersRaw),
         webSocketUrl = webSocketUrl,
         mediaUploadUrl = mediaUploadUrl,
         webhookUrl = webhookUrl
     )
+
+    fun copyToClipboard(label: String, text: String) {
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText(label, text))
+    }
+
+    val roomNameValid = roomName.trim().length >= 2
 
     Column(
         modifier = Modifier
@@ -151,7 +164,6 @@ fun HostRoomScreen(
             .navigationBarsPadding()
             .imePadding()
     ) {
-        // Minimal top header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -159,11 +171,7 @@ fun HostRoomScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(
-                onClick = {
-                    viewModel.clearHostOutcome()
-                    viewModel.clearConnectionTest()
-                    onBack()
-                },
+                onClick = onBack,
                 modifier = Modifier.testTag("host_back_button")
             ) {
                 Icon(
@@ -174,7 +182,7 @@ fun HostRoomScreen(
             }
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-                text = if (hostOutcome == null) "Host a Veil Room" else "Your Veil Room is Ready",
+                text = if (hostOutcome == null) "Host a Veil Room" else "Veil Room Ready",
                 style = MaterialTheme.typography.titleLarge.copy(color = SnowPrimary)
             )
         }
@@ -189,21 +197,16 @@ fun HostRoomScreen(
             if (outcome != null) {
                 HostRoomCreatedContent(
                     outcome = outcome,
-                    formattedCode = viewModel.formatVeilCode(outcome.room.veilCode),
+                    formattedCode = viewModel.repository.crypto.formatVeilCode(outcome.room.veilCode),
                     onCopyCode = {
-                        clipboard.setText(AnnotatedString(outcome.room.veilCode))
-                        viewModel.showToast("12-digit Veil Code copied")
+                        copyToClipboard("Veil Code", outcome.room.veilCode)
+                        viewModel.postBanner("12-digit Veil Code copied.")
                     },
                     onCopyInvite = {
-                        clipboard.setText(AnnotatedString(outcome.inviteUri))
-                        viewModel.showToast("Full Room Invite copied")
+                        copyToClipboard("Veil Invite", outcome.inviteUri)
+                        viewModel.postBanner("Room invite link copied.")
                     },
-                    onEnterRoom = {
-                        val id = outcome.room.id
-                        viewModel.clearHostOutcome()
-                        viewModel.clearConnectionTest()
-                        onEnterRoom(id)
-                    }
+                    onEnterRoom = onEnterRoom
                 )
             } else {
                 Column(
@@ -214,12 +217,11 @@ fun HostRoomScreen(
                         .padding(horizontal = 20.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // Clean Mode Switcher: Supabase (simple default) vs Self-Hosted
                     BackendTypeSegment(
                         selected = selectedType,
                         onSelect = {
                             selectedType = it
-                            viewModel.clearConnectionTest()
+                            testResult = null
                         }
                     )
 
@@ -230,9 +232,10 @@ fun HostRoomScreen(
                         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                             GlassTextField(
                                 value = roomName,
-                                onValueChange = { roomName = it },
-                                label = "Room Name (optional)",
-                                placeholder = "Family Vault, Private Chat...",
+                                onValueChange = { roomName = VeilCryptoEngine.stripEmojis(it).take(32) },
+                                label = "Room Name (Required)",
+                                placeholder = "Family Vault, Studio Team...",
+                                supportingText = "Displayed directly beneath Veil in the top bar.",
                                 tag = "host_room_name_input"
                             )
 
@@ -253,7 +256,7 @@ fun HostRoomScreen(
                                     placeholder = "eyJhbGciOi...",
                                     isSecret = true,
                                     monospace = true,
-                                    supportingText = "All messages & files are encrypted on-device before insert. Even the Supabase owner only sees ciphertext.",
+                                    supportingText = "All messages, PFPs, files, and call signals are encrypted on-device before upload.",
                                     tag = "host_api_key_input"
                                 )
                                 Row(
@@ -271,22 +274,28 @@ fun HostRoomScreen(
                                         text = "Test",
                                         icon = Icons.Rounded.NetworkCheck,
                                         enabled = !isBusy && baseUrl.isNotBlank(),
-                                        onClick = { viewModel.testConnectionDraft(buildDraft()) },
+                                        onClick = {
+                                            isBusy = true
+                                            viewModel.testBackendDraft(buildDraft()) { res ->
+                                                isBusy = false
+                                                testResult = res
+                                            }
+                                        },
                                         tag = "host_test_connection_button"
                                     )
                                 }
                             } else {
                                 GlassTextField(
                                     value = profileName,
-                                    onValueChange = { profileName = it },
-                                    label = "Server Label (optional)",
+                                    onValueChange = { profileName = VeilCryptoEngine.stripEmojis(it) },
+                                    label = "Server Label (Optional)",
                                     placeholder = "Home Rack, VPS Relay..."
                                 )
                                 GlassTextField(
                                     value = baseUrl,
                                     onValueChange = { baseUrl = it },
                                     label = "Server REST Base URL",
-                                    placeholder = "https://veil.homelab.local or http://192.168.1.50:8080",
+                                    placeholder = "https://veil.homelab.local",
                                     monospace = true,
                                     keyboardType = KeyboardType.Uri,
                                     tag = "host_url_input"
@@ -308,7 +317,7 @@ fun HostRoomScreen(
                                             modifier = Modifier.size(16.dp)
                                         )
                                         Text(
-                                            text = "Cleartext HTTP — fine on WireGuard/Tailscale/LAN; E2EE still protects payloads.",
+                                            text = "Cleartext HTTP — fine over WireGuard/Tailscale/LAN; E2EE protects payloads.",
                                             style = MaterialTheme.typography.bodySmall.copy(color = AmberWarn)
                                         )
                                     }
@@ -322,7 +331,6 @@ fun HostRoomScreen(
                                             value = authHeaderName,
                                             onValueChange = { authHeaderName = it },
                                             label = "Header Name",
-                                            placeholder = "X-API-Key",
                                             monospace = true
                                         )
                                     }
@@ -335,14 +343,12 @@ fun HostRoomScreen(
                                             AuthType.BASIC -> "Basic Credentials (user:pass)"
                                             AuthType.NONE -> ""
                                         },
-                                        placeholder = "Secret token or key",
                                         isSecret = true,
                                         monospace = true,
                                         tag = "host_api_key_input"
                                     )
                                 }
 
-                                // Collapsible Advanced Homelab Options (keeps UI uncluttered)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -353,7 +359,7 @@ fun HostRoomScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "Advanced (WebSocket, S3 Media, Webhooks, Paths)",
+                                        text = "Advanced (WebSocket, S3 Media, Webhooks, Headers)",
                                         style = MaterialTheme.typography.labelMedium.copy(color = SlateSecondary)
                                     )
                                     Icon(
@@ -368,54 +374,27 @@ fun HostRoomScreen(
                                         GlassTextField(
                                             value = webSocketUrl,
                                             onValueChange = { webSocketUrl = it },
-                                            label = "WebSocket Relay URL (optional)",
+                                            label = "WebSocket Relay URL (Optional)",
                                             placeholder = "wss://veil.homelab.local/ws",
                                             monospace = true
                                         )
                                         GlassTextField(
                                             value = mediaUploadUrl,
                                             onValueChange = { mediaUploadUrl = it },
-                                            label = "S3 / Media Upload Base URL (optional)",
-                                            placeholder = "https://s3.homelab.local/veil-blobs",
+                                            label = "S3 / Media Upload Base URL (Optional)",
                                             monospace = true
                                         )
                                         GlassTextField(
                                             value = webhookUrl,
                                             onValueChange = { webhookUrl = it },
-                                            label = "Outbound Webhook URL (optional)",
-                                            placeholder = "https://hooks.homelab.local/veil",
+                                            label = "Outbound Webhook URL (Optional)",
                                             monospace = true
                                         )
                                         GlassTextField(
                                             value = customHeadersRaw,
                                             onValueChange = { customHeadersRaw = it },
                                             label = "Custom Headers (Key: Value per line)",
-                                            placeholder = "CF-Access-Client-Id: xxx",
                                             singleLine = false,
-                                            monospace = true
-                                        )
-                                        GlassTextField(
-                                            value = messagesPath,
-                                            onValueChange = { messagesPath = it },
-                                            label = "Messages Endpoint Path",
-                                            monospace = true
-                                        )
-                                        GlassTextField(
-                                            value = roomsPath,
-                                            onValueChange = { roomsPath = it },
-                                            label = "Rooms Endpoint Path",
-                                            monospace = true
-                                        )
-                                        GlassTextField(
-                                            value = membersPath,
-                                            onValueChange = { membersPath = it },
-                                            label = "Members Endpoint Path",
-                                            monospace = true
-                                        )
-                                        GlassTextField(
-                                            value = healthPath,
-                                            onValueChange = { healthPath = it },
-                                            label = "Health Endpoint Path",
                                             monospace = true
                                         )
                                     }
@@ -425,7 +404,13 @@ fun HostRoomScreen(
                                     text = "Test Connection",
                                     icon = Icons.Rounded.NetworkCheck,
                                     enabled = !isBusy && baseUrl.isNotBlank(),
-                                    onClick = { viewModel.testConnectionDraft(buildDraft()) },
+                                    onClick = {
+                                        isBusy = true
+                                        viewModel.testBackendDraft(buildDraft()) { res ->
+                                            isBusy = false
+                                            testResult = res
+                                        }
+                                    },
                                     modifier = Modifier.fillMaxWidth(),
                                     tag = "host_test_connection_button"
                                 )
@@ -433,10 +418,52 @@ fun HostRoomScreen(
                         }
                     }
 
-                    // Connection test result pill
-                    connectionTest?.let { result ->
-                        val tint = if (result.success) GlacierMint else CoralError
-                        val bg = if (result.success) GlacierMintContainer else CoralContainer
+                    // Reuse saved backend quick option if user already saved one and left URL blank
+                    if (savedProfiles.isNotEmpty() && baseUrl.isBlank()) {
+                        val activeSaved = savedProfiles.firstOrNull { it.isActive } ?: savedProfiles.first()
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            containerColor = GlassSurfaceSubtle
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Use Saved Backend: ${activeSaved.name}",
+                                        style = MaterialTheme.typography.titleSmall.copy(color = SnowPrimary)
+                                    )
+                                    Text(
+                                        text = activeSaved.baseUrl,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontFamily = JetBrainsMonoFamily,
+                                            color = SlateSecondary
+                                        )
+                                    )
+                                }
+                                GlassSecondaryButton(
+                                    text = "Host Here",
+                                    enabled = !isBusy && roomNameValid,
+                                    accentColor = accent.highlight,
+                                    onClick = {
+                                        isBusy = true
+                                        viewModel.hostRoom(roomName.trim(), activeSaved.id) { res ->
+                                            isBusy = false
+                                            res.onSuccess { hostOutcome = it }
+                                                .onFailure { viewModel.postBanner(it.message ?: "Failed to host room.") }
+                                        }
+                                    },
+                                    tag = "host_with_saved_backend_button"
+                                )
+                            }
+                        }
+                    }
+
+                    testResult?.let { result ->
+                        val tint = if (result.success) accent.highlight else CoralError
+                        val bg = if (result.success) accent.container else CoralContainer
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -463,8 +490,22 @@ fun HostRoomScreen(
                     GlassPrimaryButton(
                         text = if (isBusy) "Creating Veil Room..." else "Connect & Create Veil Room",
                         icon = if (isBusy) null else Icons.Rounded.Shield,
-                        enabled = !isBusy && baseUrl.isNotBlank(),
-                        onClick = { viewModel.hostVeilRoom(buildDraft(), roomName) },
+                        enabled = !isBusy && roomNameValid && baseUrl.isNotBlank(),
+                        onClick = {
+                            isBusy = true
+                            viewModel.saveBackendProfile(buildDraft()) { saveRes ->
+                                saveRes.onSuccess { savedBackend ->
+                                    viewModel.hostRoom(roomName.trim(), savedBackend.id) { hostRes ->
+                                        isBusy = false
+                                        hostRes.onSuccess { hostOutcome = it }
+                                            .onFailure { viewModel.postBanner(it.message ?: "Unable to host room.") }
+                                    }
+                                }.onFailure { err ->
+                                    isBusy = false
+                                    viewModel.postBanner(err.message ?: "Invalid backend configuration.")
+                                }
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         tag = "host_create_room_button"
                     )
@@ -472,7 +513,7 @@ fun HostRoomScreen(
                     if (isBusy) {
                         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                             CircularProgressIndicator(
-                                color = GlacierMint,
+                                color = accent.primary,
                                 strokeWidth = 2.dp,
                                 modifier = Modifier.size(22.dp)
                             )
@@ -486,10 +527,9 @@ fun HostRoomScreen(
     }
 
     if (showSqlSheet) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
             onDismissRequest = { showSqlSheet = false },
-            sheetState = sheetState,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             containerColor = ObsidianBg,
             contentColor = SnowPrimary
         ) {
@@ -502,11 +542,11 @@ fun HostRoomScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "Supabase Zero-Knowledge Tables",
+                    text = "Veil v1.0.1 Zero-Knowledge SQL Schema (8 Tables)",
                     style = MaterialTheme.typography.titleLarge.copy(color = SnowPrimary)
                 )
                 Text(
-                    text = "Paste this once into your Supabase SQL Editor. Veil encrypts all text, files, and locations on-device before insert — your tables only ever store ciphertext.",
+                    text = "Run once in Supabase SQL Editor. All messages, PFPs, files, locations, and voice call signals are encrypted on-device before insert.",
                     style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
                 )
                 GlassCard(
@@ -518,7 +558,7 @@ fun HostRoomScreen(
                         text = VeilBackendClient.SUPABASE_SQL_SCHEMA,
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontFamily = JetBrainsMonoFamily,
-                            color = GlacierMint,
+                            color = accent.highlight,
                             lineHeight = 16.sp
                         )
                     )
@@ -527,8 +567,8 @@ fun HostRoomScreen(
                     text = "Copy SQL to Clipboard",
                     icon = Icons.Rounded.ContentCopy,
                     onClick = {
-                        clipboard.setText(AnnotatedString(VeilBackendClient.SUPABASE_SQL_SCHEMA))
-                        viewModel.showToast("Supabase SQL copied")
+                        copyToClipboard("Veil v1.0.1 SQL Schema", VeilBackendClient.SUPABASE_SQL_SCHEMA)
+                        viewModel.postBanner("8-table Veil SQL schema copied.")
                         showSqlSheet = false
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -548,6 +588,7 @@ private fun HostRoomCreatedContent(
     onCopyInvite: () -> Unit,
     onEnterRoom: () -> Unit
 ) {
+    val accent = LocalVeilAccent.current
     Column(
         modifier = Modifier
             .widthIn(max = 520.dp)
@@ -558,14 +599,14 @@ private fun HostRoomCreatedContent(
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         GlassPill(
-            text = if (outcome.remoteSynced) "Connected · Zero-Knowledge E2EE Active" else "Local Vault Ready · Sync Queued",
+            text = if (outcome.warningMessage == null) "Connected · Zero-Knowledge E2EE Active" else "Local Vault Ready · Sync Pending",
             icon = Icons.Rounded.Shield,
-            accentColor = if (outcome.remoteSynced) GlacierMint else AmberWarn
+            accentColor = if (outcome.warningMessage == null) accent.highlight else AmberWarn
         )
 
         GlassCard(
             modifier = Modifier.fillMaxWidth(),
-            borderTopColor = GlacierMint.copy(alpha = 0.35f),
+            borderTopColor = accent.highlight.copy(alpha = 0.35f),
             contentPadding = PaddingValues(22.dp)
         ) {
             Column(
@@ -573,6 +614,13 @@ private fun HostRoomCreatedContent(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                Text(
+                    text = outcome.room.roomName,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        color = SnowPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
                 Text(
                     text = "12-DIGIT VEIL CODE",
                     style = MaterialTheme.typography.labelSmall.copy(
@@ -584,7 +632,7 @@ private fun HostRoomCreatedContent(
                     text = formattedCode,
                     style = MaterialTheme.typography.headlineMedium.copy(
                         fontFamily = JetBrainsMonoFamily,
-                        color = GlacierMint,
+                        color = accent.highlight,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 1.sp
                     ),
@@ -595,7 +643,7 @@ private fun HostRoomCreatedContent(
                 QrCodeView(payload = outcome.inviteUri, sizeDp = 196.dp)
 
                 Text(
-                    text = "Share the 12-digit Veil Code or let your peer scan this Room QR to connect directly to your database with end-to-end encryption.",
+                    text = "Share the 12-digit Veil Code or Room QR so peers can join ${outcome.room.roomName} with zero-knowledge E2EE.",
                     style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary),
                     textAlign = TextAlign.Center
                 )
@@ -623,7 +671,7 @@ private fun HostRoomCreatedContent(
         }
 
         GlassPrimaryButton(
-            text = "Open Veil Room",
+            text = "Open ${outcome.room.roomName}",
             icon = Icons.AutoMirrored.Rounded.ArrowForward,
             onClick = onEnterRoom,
             modifier = Modifier.fillMaxWidth(),
@@ -676,14 +724,15 @@ private fun SegmentTab(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val accent = LocalVeilAccent.current
     val shape = RoundedCornerShape(14.dp)
     Row(
         modifier = modifier
             .clip(shape)
-            .background(if (selected) GlacierMintContainer else androidx.compose.ui.graphics.Color.Transparent)
+            .background(if (selected) accent.container else Color.Transparent)
             .border(
                 width = 1.dp,
-                color = if (selected) GlacierMint.copy(alpha = 0.4f) else androidx.compose.ui.graphics.Color.Transparent,
+                color = if (selected) accent.highlight.copy(alpha = 0.4f) else Color.Transparent,
                 shape = shape
             )
             .clickable(onClick = onClick)
@@ -694,14 +743,14 @@ private fun SegmentTab(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = if (selected) GlacierMint else SlateSecondary,
+            tint = if (selected) accent.highlight else SlateSecondary,
             modifier = Modifier.size(16.dp)
         )
         Spacer(modifier = Modifier.width(6.dp))
         Text(
             text = label,
             style = MaterialTheme.typography.labelLarge.copy(
-                color = if (selected) GlacierMint else SlateSecondary
+                color = if (selected) accent.highlight else SlateSecondary
             )
         )
     }
@@ -712,6 +761,7 @@ fun AuthTypeRow(
     selected: AuthType,
     onSelect: (AuthType) -> Unit
 ) {
+    val accent = LocalVeilAccent.current
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             text = "Authentication",
@@ -732,10 +782,10 @@ fun AuthTypeRow(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(if (active) GlacierMintContainer else GlassSurfaceSubtle)
+                        .background(if (active) accent.container else GlassSurfaceSubtle)
                         .border(
                             1.dp,
-                            if (active) GlacierMint.copy(alpha = 0.45f) else GlassBorderTop,
+                            if (active) accent.highlight.copy(alpha = 0.45f) else GlassBorderTop,
                             RoundedCornerShape(12.dp)
                         )
                         .clickable { onSelect(type) }
@@ -745,7 +795,7 @@ fun AuthTypeRow(
                     Text(
                         text = label,
                         style = MaterialTheme.typography.labelMedium.copy(
-                            color = if (active) GlacierMint else SlateMuted
+                            color = if (active) accent.highlight else SlateMuted
                         )
                     )
                 }

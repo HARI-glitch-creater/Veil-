@@ -98,7 +98,7 @@ class VeilCryptoEngine(context: Context) {
     }
 
     fun updateHandle(newHandle: String): LocalIdentity {
-        val sanitized = newHandle.trim().take(32).ifBlank { "node" }
+        val sanitized = stripEmojis(newHandle).trim().take(24).ifBlank { "node" }
         prefs.edit().putString(KEY_HANDLE, sanitized).apply()
         return getOrCreateIdentity()
     }
@@ -117,9 +117,7 @@ class VeilCryptoEngine(context: Context) {
 
     fun generateVeilCode(): String {
         val digits = StringBuilder(12)
-        repeat(12) {
-            digits.append(secureRandom.nextInt(10))
-        }
+        repeat(12) { digits.append(secureRandom.nextInt(10)) }
         return digits.toString()
     }
 
@@ -128,11 +126,13 @@ class VeilCryptoEngine(context: Context) {
         return clean.chunked(4).joinToString(" - ")
     }
 
-    fun generateRandomRoomKeyBase64(): String {
+    fun generateRandomKeyBase64(): String {
         val keyBytes = ByteArray(32)
         secureRandom.nextBytes(keyBytes)
         return encodeB64(keyBytes)
     }
+
+    fun generateRandomRoomKeyBase64(): String = generateRandomKeyBase64()
 
     fun isValidPublicKey(publicKeyB64: String): Boolean {
         return runCatching {
@@ -141,13 +141,7 @@ class VeilCryptoEngine(context: Context) {
         }.getOrDefault(false)
     }
 
-    /**
-     * Derives a 256-bit conversation key using ECDH P-256 between this device's private key
-     * and the peer's public key, stretched with HKDF-SHA256 bound to the 12-digit Veil Code.
-     * Because private keys never leave the devices, neither the Supabase owner nor any server
-     * admin can compute this key.
-     */
-    fun deriveEcdhRoomKey(peerPublicKeyB64: String, veilCode: String): ByteArray {
+    fun deriveEcdhRoomKey(peerPublicKeyB64: String, contextId: String): ByteArray {
         val privateKey = loadLocalPrivateKey()
         val peerPublicKey = decodePublicKey(peerPublicKeyB64)
         val agreement = KeyAgreement.getInstance("ECDH")
@@ -156,50 +150,91 @@ class VeilCryptoEngine(context: Context) {
         val sharedSecret = agreement.generateSecret()
         return hkdfSha256(
             ikm = sharedSecret,
-            salt = "veil-ecdh-salt-$veilCode".toByteArray(Charsets.UTF_8),
-            info = "veil-room-aes256-gcm:$veilCode".toByteArray(Charsets.UTF_8),
+            salt = "veil-ecdh-salt-$contextId".toByteArray(Charsets.UTF_8),
+            info = "veil-aes256-gcm:$contextId".toByteArray(Charsets.UTF_8),
             outputLength = 32
         )
     }
 
-    fun deriveSymmetricRoomKey(roomKeyB64: String, veilCode: String): ByteArray {
-        val raw = decodeB64(roomKeyB64)
+    fun deriveSymmetricKey(secretB64: String, contextId: String): ByteArray {
+        val raw = decodeB64(secretB64)
         return hkdfSha256(
             ikm = raw,
-            salt = "veil-room-salt-$veilCode".toByteArray(Charsets.UTF_8),
-            info = "veil-room-content-v1:$veilCode".toByteArray(Charsets.UTF_8),
+            salt = "veil-sym-salt-$contextId".toByteArray(Charsets.UTF_8),
+            info = "veil-content-v1:$contextId".toByteArray(Charsets.UTF_8),
             outputLength = 32
         )
     }
 
-    fun encryptText(keyBytes: ByteArray, plaintext: String): EncryptedEnvelope {
-        return encryptBytes(keyBytes, plaintext.toByteArray(Charsets.UTF_8))
+    fun deriveSymmetricRoomKey(roomKeyB64: String, veilCode: String): ByteArray =
+        deriveSymmetricKey(roomKeyB64, veilCode)
+
+    fun wrapCommunityKeyForPeer(
+        communityKeyB64: String,
+        peerPublicKeyB64: String,
+        communityId: String
+    ): String {
+        val wrappingKey = deriveEcdhRoomKey(peerPublicKeyB64, "community-wrap:$communityId")
+        val env = encryptText(wrappingKey, communityKeyB64)
+        return "${env.ivBase64}:${env.ciphertextBase64}"
     }
 
-    fun decryptText(keyBytes: ByteArray, ivBase64: String, ciphertextBase64: String): String {
-        val bytes = decryptBytes(keyBytes, ivBase64, ciphertextBase64)
-        return String(bytes, Charsets.UTF_8)
+    fun unwrapCommunityKeyFromPeer(
+        wrappedPayload: String,
+        senderPublicKeyB64: String,
+        communityId: String
+    ): String? {
+        val parts = wrappedPayload.split(":")
+        if (parts.size != 2) return null
+        return runCatching {
+            val wrappingKey = deriveEcdhRoomKey(senderPublicKeyB64, "community-wrap:$communityId")
+            decryptText(wrappingKey, parts[0], parts[1])
+        }.getOrNull()
     }
+
+    fun encryptSignalForPeer(
+        peerPublicKeyB64: String,
+        roomCode: String,
+        plaintext: String
+    ): String {
+        val key = deriveEcdhRoomKey(peerPublicKeyB64, "call-signal:$roomCode")
+        val env = encryptText(key, plaintext)
+        return "${env.ivBase64}:${env.ciphertextBase64}"
+    }
+
+    fun decryptSignalFromPeer(
+        peerPublicKeyB64: String,
+        roomCode: String,
+        packedPayload: String
+    ): String? {
+        val parts = packedPayload.split(":")
+        if (parts.size != 2) return null
+        return runCatching {
+            val key = deriveEcdhRoomKey(peerPublicKeyB64, "call-signal:$roomCode")
+            decryptText(key, parts[0], parts[1])
+        }.getOrNull()
+    }
+
+    fun encryptText(keyBytes: ByteArray, plaintext: String): EncryptedEnvelope =
+        encryptBytes(keyBytes, plaintext.toByteArray(Charsets.UTF_8))
+
+    fun decryptText(keyBytes: ByteArray, ivBase64: String, ciphertextBase64: String): String =
+        String(decryptBytes(keyBytes, ivBase64, ciphertextBase64), Charsets.UTF_8)
 
     fun encryptBytes(keyBytes: ByteArray, plaintext: ByteArray): EncryptedEnvelope {
         val iv = ByteArray(12)
         secureRandom.nextBytes(iv)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val secretKey = SecretKeySpec(keyBytes, "AES")
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, iv))
         val ciphertext = cipher.doFinal(plaintext)
-        return EncryptedEnvelope(
-            ivBase64 = encodeB64(iv),
-            ciphertextBase64 = encodeB64(ciphertext)
-        )
+        return EncryptedEnvelope(encodeB64(iv), encodeB64(ciphertext))
     }
 
     fun decryptBytes(keyBytes: ByteArray, ivBase64: String, ciphertextBase64: String): ByteArray {
         val iv = decodeB64(ivBase64)
         val ciphertext = decodeB64(ciphertextBase64)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val secretKey = SecretKeySpec(keyBytes, "AES")
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, iv))
         return cipher.doFinal(ciphertext)
     }
 
@@ -208,8 +243,7 @@ class VeilCryptoEngine(context: Context) {
         secureRandom.nextBytes(iv)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, iv))
-        val encrypted = cipher.doFinal(rawBytes)
-        return iv + encrypted
+        return iv + cipher.doFinal(rawBytes)
     }
 
     fun decryptBlobPacket(keyBytes: ByteArray, packet: ByteArray): ByteArray {
@@ -221,10 +255,6 @@ class VeilCryptoEngine(context: Context) {
         return cipher.doFinal(body)
     }
 
-    /**
-     * Computes a deterministic 60-digit Safety Number (12 groups of 5 digits) from both
-     * participants' EC P-256 public keys, matching Signal-style symmetric fingerprint verification.
-     */
     fun computeSafetyNumber(localPublicKeyB64: String, peerPublicKeyB64: String): String {
         val a = runCatching { decodeB64(localPublicKeyB64) }.getOrElse { localPublicKeyB64.toByteArray() }
         val b = runCatching { decodeB64(peerPublicKeyB64) }.getOrElse { peerPublicKeyB64.toByteArray() }
@@ -232,7 +262,6 @@ class VeilCryptoEngine(context: Context) {
 
         val md = MessageDigest.getInstance("SHA-256")
         val digits = StringBuilder(60)
-
         for (part in ordered) {
             var digest = part
             repeat(520) {
@@ -248,17 +277,14 @@ class VeilCryptoEngine(context: Context) {
                     ((digest[offset + 2].toLong() and 0xFFL) shl 16) or
                     ((digest[offset + 3].toLong() and 0xFFL) shl 8) or
                     (digest[offset + 4].toLong() and 0xFFL)
-                val fiveDigits = (value % 100_000L).toString().padStart(5, '0')
-                digits.append(fiveDigits)
+                digits.append((value % 100_000L).toString().padStart(5, '0'))
             }
         }
         return digits.toString().take(60)
     }
 
-    fun formatSafetyNumberGroups(safetyNumber60: String): List<String> {
-        val clean = safetyNumber60.filter { it.isDigit() }.padEnd(60, '0').take(60)
-        return clean.chunked(5)
-    }
+    fun formatSafetyNumberGroups(safetyNumber60: String): List<String> =
+        safetyNumber60.filter { it.isDigit() }.padEnd(60, '0').take(60).chunked(5)
 
     fun computeShortFingerprint(publicKeyB64: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -303,12 +329,8 @@ class VeilCryptoEngine(context: Context) {
             .appendQueryParameter("pub", hostPublicKey)
             .appendQueryParameter("host", hostHandle)
             .appendQueryParameter("rk", roomKeyBase64)
-        if (webSocketUrl.isNotBlank()) {
-            builder.appendQueryParameter("ws", webSocketUrl)
-        }
-        if (mediaUploadUrl.isNotBlank()) {
-            builder.appendQueryParameter("s3", mediaUploadUrl)
-        }
+        if (webSocketUrl.isNotBlank()) builder.appendQueryParameter("ws", webSocketUrl)
+        if (mediaUploadUrl.isNotBlank()) builder.appendQueryParameter("s3", mediaUploadUrl)
         return builder.build().toString()
     }
 
@@ -342,31 +364,24 @@ class VeilCryptoEngine(context: Context) {
         getOrCreateIdentity()
         val wrapped = prefs.getString(KEY_PRIV_WRAPPED, null)
             ?: error("Local identity private key missing")
-        val raw = unprotectSecretBytes(wrapped)
-        return KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(raw))
+        return KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(unprotectSecretBytes(wrapped)))
     }
 
-    private fun decodePublicKey(publicKeyB64: String): PublicKey {
-        val bytes = decodeB64(publicKeyB64)
-        return KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(bytes))
-    }
+    private fun decodePublicKey(publicKeyB64: String): PublicKey =
+        KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(decodeB64(publicKeyB64)))
 
     private fun protectSecretBytes(plain: ByteArray): String {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, masterKey)
-        val iv = cipher.iv
-        val ciphertext = cipher.doFinal(plain)
-        return "${encodeB64(iv)}:${encodeB64(ciphertext)}"
+        return "${encodeB64(cipher.iv)}:${encodeB64(cipher.doFinal(plain))}"
     }
 
     private fun unprotectSecretBytes(stored: String): ByteArray {
         val parts = stored.split(":")
         require(parts.size == 2) { "Corrupt wrapped secret" }
-        val iv = decodeB64(parts[0])
-        val ciphertext = decodeB64(parts[1])
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, masterKey, GCMParameterSpec(128, iv))
-        return cipher.doFinal(ciphertext)
+        cipher.init(Cipher.DECRYPT_MODE, masterKey, GCMParameterSpec(128, decodeB64(parts[0])))
+        return cipher.doFinal(decodeB64(parts[1]))
     }
 
     private fun getOrCreateMasterKey(): SecretKey {
@@ -374,11 +389,7 @@ class VeilCryptoEngine(context: Context) {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             val existing = keyStore.getKey(MASTER_KEY_ALIAS, null) as? SecretKey
             if (existing != null) return existing
-
-            val keyGen = KeyGenerator.getInstance(
-                KeyProperties.KEY_ALGORITHM_AES,
-                ANDROID_KEYSTORE
-            )
+            val keyGen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
             val spec = KeyGenParameterSpec.Builder(
                 MASTER_KEY_ALIAS,
                 KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
@@ -390,31 +401,19 @@ class VeilCryptoEngine(context: Context) {
             keyGen.init(spec)
             keyGen.generateKey()
         }.getOrElse {
-            // Fallback for local JVM/Robolectric tests where AndroidKeyStore isn't mounted
             val fallbackHex = prefs.getString(KEY_FALLBACK_WRAP, null)
-            val raw = if (fallbackHex != null) {
-                decodeB64(fallbackHex)
-            } else {
-                ByteArray(32).also {
-                    secureRandom.nextBytes(it)
-                    prefs.edit().putString(KEY_FALLBACK_WRAP, encodeB64(it)).apply()
-                }
+            val raw = if (fallbackHex != null) decodeB64(fallbackHex) else ByteArray(32).also {
+                secureRandom.nextBytes(it)
+                prefs.edit().putString(KEY_FALLBACK_WRAP, encodeB64(it)).apply()
             }
             SecretKeySpec(raw, "AES")
         }
     }
 
-    private fun hkdfSha256(
-        ikm: ByteArray,
-        salt: ByteArray,
-        info: ByteArray,
-        outputLength: Int
-    ): ByteArray {
+    private fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, outputLength: Int): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
-        val actualSalt = if (salt.isEmpty()) ByteArray(32) else salt
-        mac.init(SecretKeySpec(actualSalt, "HmacSHA256"))
+        mac.init(SecretKeySpec(if (salt.isEmpty()) ByteArray(32) else salt, "HmacSHA256"))
         val prk = mac.doFinal(ikm)
-
         val result = ByteArray(outputLength)
         var t = ByteArray(0)
         var offset = 0
@@ -438,11 +437,8 @@ class VeilCryptoEngine(context: Context) {
         return "veil-$suffix"
     }
 
-    private fun encodeB64(bytes: ByteArray): String =
-        Base64.encodeToString(bytes, Base64.NO_WRAP)
-
-    private fun decodeB64(input: String): ByteArray =
-        Base64.decode(input.trim(), Base64.DEFAULT)
+    private fun encodeB64(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
+    private fun decodeB64(input: String): ByteArray = Base64.decode(input.trim(), Base64.DEFAULT)
 
     companion object {
         private const val PREFS_NAME = "veil_identity_keystore_prefs"
@@ -452,5 +448,41 @@ class VeilCryptoEngine(context: Context) {
         private const val KEY_PRIV_WRAPPED = "identity_ec_priv_wrapped"
         private const val KEY_HANDLE = "identity_handle"
         private const val KEY_FALLBACK_WRAP = "fallback_wrap_key"
+
+        fun stripEmojis(input: String): String {
+            val sb = StringBuilder(input.length)
+            var i = 0
+            while (i < input.length) {
+                val cp = input.codePointAt(i)
+                val charCount = Character.charCount(cp)
+                if (!isEmojiCodePoint(cp)) {
+                    sb.appendCodePoint(cp)
+                }
+                i += charCount
+            }
+            return sb.toString()
+        }
+
+        fun countWords(input: String): Int {
+            val trimmed = input.trim()
+            if (trimmed.isEmpty()) return 0
+            return trimmed.split(Regex("\\s+")).count { it.isNotBlank() }
+        }
+
+        fun enforceMaxWords(input: String, maxWords: Int = 20): String {
+            val cleaned = stripEmojis(input)
+            val words = cleaned.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+            if (words.size <= maxWords) return cleaned
+            return words.take(maxWords).joinToString(" ")
+        }
+
+        private fun isEmojiCodePoint(cp: Int): Boolean {
+            val type = Character.getType(cp)
+            if (type == Character.OTHER_SYMBOL.toInt() || type == Character.SURROGATE.toInt()) return true
+            return (cp in 0x1F300..0x1FAFF) ||
+                (cp in 0x2600..0x27BF) ||
+                (cp in 0xFE00..0xFE0F) ||
+                cp == 0x200D
+        }
     }
 }
