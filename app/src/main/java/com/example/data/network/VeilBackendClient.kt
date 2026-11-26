@@ -21,6 +21,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 data class ResolvedBackendConfig(
@@ -166,7 +167,7 @@ class VeilBackendClient {
                         resp.isSuccessful -> ConnectionTestResult(
                             true, resp.code, elapsed,
                             if (config.profile.backendType == BackendType.SUPABASE) {
-                                "Supabase connected and Veil v1.0.1 tables ready (${elapsed}ms)"
+                                "Supabase connected and Veil v${com.example.BuildConfig.VERSION_NAME} tables ready (${elapsed}ms)"
                             } else {
                                 "Server reachable (${resp.code} · ${elapsed}ms)"
                             },
@@ -351,6 +352,50 @@ class VeilBackendClient {
                         joinedAt = o.optLong("joined_at", System.currentTimeMillis())
                     )
                 }.filter { it.publicKey.isNotBlank() }
+            }
+        }
+    }
+
+    /**
+     * Exclusive Stealth Room Creator action: removes a member from veil_members and revokes
+     * their memberships in all room communities. Strictly URL-encodes room_code and keys.
+     */
+    suspend fun removeMemberFromRoom(
+        config: ResolvedBackendConfig,
+        roomCode: String,
+        targetPublicKey: String,
+        roomCommunityIds: List<String>
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val baseUrl = validateHttpUrl(config.profile.baseUrl).getOrElse { return@withContext Result.failure(it) }
+        val encRoom = URLEncoder.encode(roomCode, "UTF-8")
+        val encPub = URLEncoder.encode(targetPublicKey, "UTF-8")
+        runCatching {
+            val memberDeleteUrl = when (config.profile.backendType) {
+                BackendType.SUPABASE ->
+                    "$baseUrl/rest/v1/veil_members?room_code=eq.$encRoom&public_key=eq.$encPub"
+                BackendType.SELF_HOSTED ->
+                    "${buildPathUrl(baseUrl, config.profile.membersPath)}?room_code=$encRoom&public_key=$encPub"
+            }
+            val memberReq = applyAuthHeaders(Request.Builder().url(memberDeleteUrl).delete(), config).build()
+            client.newCall(memberReq).execute().use { resp ->
+                if (!resp.isSuccessful && resp.code != 404) {
+                    error("Failed to remove member (HTTP ${resp.code})")
+                }
+            }
+
+            // Revoke the removed member's access from any room communities as well.
+            for (communityId in roomCommunityIds) {
+                val encComm = URLEncoder.encode(communityId, "UTF-8")
+                val commMemberDeleteUrl = when (config.profile.backendType) {
+                    BackendType.SUPABASE ->
+                        "$baseUrl/rest/v1/veil_community_members?community_id=eq.$encComm&member_public_key=eq.$encPub"
+                    BackendType.SELF_HOSTED ->
+                        "$baseUrl/api/v1/community-members?community_id=$encComm&member_public_key=$encPub"
+                }
+                runCatching {
+                    val req = applyAuthHeaders(Request.Builder().url(commMemberDeleteUrl).delete(), config).build()
+                    client.newCall(req).execute().close()
+                }
             }
         }
     }
@@ -648,14 +693,16 @@ class VeilBackendClient {
     ): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = validateHttpUrl(config.profile.baseUrl).getOrElse { return@withContext Result.failure(it) }
         runCatching {
+            // Hash roomCode into a URL-safe hex folder so symbols (#, &, +, ?, %) never break object paths.
+            val safeFolder = safeStorageFolder(roomCode)
             val targetUrl = when {
                 config.profile.backendType == BackendType.SUPABASE -> {
                     val bucket = config.profile.supabaseBucket.trim().ifBlank { "veil-media" }
-                    "$baseUrl/storage/v1/object/$bucket/$roomCode/$blobId.veil"
+                    "$baseUrl/storage/v1/object/$bucket/$safeFolder/$blobId.veil"
                 }
                 config.profile.mediaUploadUrl.isNotBlank() -> {
                     val mediaBase = validateHttpUrl(config.profile.mediaUploadUrl).getOrThrow()
-                    "$mediaBase/$roomCode/$blobId.veil"
+                    "$mediaBase/$safeFolder/$blobId.veil"
                 }
                 else -> error("No external media endpoint configured")
             }
@@ -716,7 +763,8 @@ class VeilBackendClient {
                     close()
                     return@callbackFlow
                 }
-                if (custom.contains("?")) "$custom&room_code=$roomCode" else "$custom?room_code=$roomCode"
+                val encRoom = URLEncoder.encode(roomCode, "UTF-8")
+                if (custom.contains("?")) "$custom&room_code=$encRoom" else "$custom?room_code=$encRoom"
             }
         }
 
@@ -817,6 +865,12 @@ class VeilBackendClient {
         return "$baseUrl$normalized"
     }
 
+    private fun safeStorageFolder(roomCode: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("veil-storage:$roomCode".toByteArray(Charsets.UTF_8))
+        return digest.take(12).joinToString("") { "%02x".format(it) }
+    }
+
     private fun extractFirstObject(raw: String): JSONObject? {
         if (raw.isBlank()) return null
         return when {
@@ -842,7 +896,7 @@ class VeilBackendClient {
     }
 
     companion object {
-        const val SUPABASE_SQL_SCHEMA = """-- Veil v1.0.1 Zero-Knowledge Supabase Schema
+        const val SUPABASE_SQL_SCHEMA = """-- Veil v1.0.2 Zero-Knowledge Supabase Schema
 -- Run once in Supabase SQL Editor. All messages, media, PFPs, locations & call signals
 -- are encrypted on-device with AES-256-GCM before insert. DB owners only see ciphertext.
 

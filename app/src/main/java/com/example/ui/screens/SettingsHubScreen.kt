@@ -77,7 +77,10 @@ import com.example.ui.components.GlassSecondaryButton
 import com.example.ui.components.GlassTextField
 import com.example.ui.components.ProfileAvatar
 import com.example.ui.components.QrCodeView
+import androidx.compose.ui.res.stringResource
+import com.example.R
 import com.example.ui.components.VeilColorThemeCustomizer
+import com.example.ui.components.VeilDynamicLogo
 import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.GlassBorderTop
@@ -85,9 +88,11 @@ import com.example.ui.theme.GlassSurfaceElevated
 import com.example.ui.theme.GlassSurfaceSubtle
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.LocalVeilAccent
+import com.example.ui.theme.ObsidianDeep
 import com.example.ui.theme.SlateMuted
 import com.example.ui.theme.SlateSecondary
 import com.example.ui.theme.SnowPrimary
+import com.example.ui.theme.SpaceGroteskFamily
 import java.io.File
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -494,26 +499,51 @@ fun SettingsHubScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Palette,
-                            contentDescription = null,
-                            tint = accent.highlight
-                        )
-                        Text(
-                            text = "Color Theme Customizer",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                color = SnowPrimary,
-                                fontWeight = FontWeight.SemiBold
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(ObsidianDeep)
+                                .border(1.dp, accent.highlight.copy(alpha = 0.4f), RoundedCornerShape(18.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            VeilDynamicLogo(
+                                accentColor = accentColor,
+                                modifier = Modifier.size(56.dp),
+                                contentDescription = "Live themed Veil logo preview"
                             )
-                        )
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Palette,
+                                    contentDescription = null,
+                                    tint = accent.highlight
+                                )
+                                Text(
+                                    text = "Color Theme Customizer",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        color = SnowPrimary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                )
+                            }
+                            Text(
+                                text = "Shifts the Veil emblem, buttons, bubbles, and home screen launcher icon in real time while preserving pure Obsidian Black surfaces.",
+                                style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
+                            )
+                        }
                     }
-                    Text(
-                        text = "Keep pure Obsidian Black surfaces while customizing your accent color across tabs, bubbles, buttons, and icons.",
-                        style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
-                    )
                     VeilColorThemeCustomizer(
                         currentColor = accentColor,
                         onColorSelected = onSelectAccentColor
@@ -529,21 +559,50 @@ fun SettingsHubScreen(
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text(
-                            text = "Backend & Updates",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                color = SnowPrimary,
-                                fontWeight = FontWeight.SemiBold
+                        Box(
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(ObsidianDeep)
+                                .border(1.dp, GlassBorderTop, RoundedCornerShape(14.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            VeilDynamicLogo(
+                                accentColor = accentColor,
+                                modifier = Modifier.size(46.dp),
+                                contentDescription = "Veil app logo"
                             )
-                        )
-                        GlassPill(
-                            text = "Veil v${BuildConfig.VERSION_NAME}",
-                            monospace = true,
-                            accentColor = accent.highlight
-                        )
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "Veil",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontFamily = SpaceGroteskFamily,
+                                        color = SnowPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                )
+                                GlassPill(
+                                    text = "v${BuildConfig.VERSION_NAME}",
+                                    monospace = true,
+                                    accentColor = accent.highlight
+                                )
+                            }
+                            Text(
+                                text = stringResource(R.string.splash_motto),
+                                style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
+                            )
+                        }
                     }
 
                     GlassSecondaryButton(
@@ -555,12 +614,12 @@ fun SettingsHubScreen(
                     )
 
                     GlassSecondaryButton(
-                        text = "Copy v1.0.1 Supabase SQL Schema (8 Tables)",
+                        text = "Copy v${BuildConfig.VERSION_NAME} Supabase SQL Schema (8 Tables)",
                         icon = Icons.Rounded.ContentCopy,
                         onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             cm.setPrimaryClip(ClipData.newPlainText("Veil SQL Schema", VeilBackendClient.SUPABASE_SQL_SCHEMA))
-                            onPostStatus("8-table Veil v1.0.1 SQL schema copied to clipboard.")
+                            onPostStatus("8-table Veil v${BuildConfig.VERSION_NAME} SQL schema copied to clipboard.")
                         },
                         modifier = Modifier.fillMaxWidth(),
                         tag = "settings_copy_sql_schema"

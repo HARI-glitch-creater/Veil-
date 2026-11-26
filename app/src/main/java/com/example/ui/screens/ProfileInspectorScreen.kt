@@ -24,14 +24,17 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,6 +57,7 @@ import com.example.ui.components.ProfileAvatar
 import com.example.ui.components.QrCodeView
 import com.example.ui.theme.CoralContainer
 import com.example.ui.theme.CoralError
+import com.example.ui.theme.GlassSurfaceElevated
 import com.example.ui.theme.GlassSurfaceSubtle
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.LocalVeilAccent
@@ -64,19 +68,23 @@ import com.example.ui.theme.SnowPrimary
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ProfileInspectorScreen(
+    roomName: String,
     member: RoomMemberEntity,
     safetyNumberGroups: List<String>,
+    isRoomCreator: Boolean,
     onBack: () -> Unit,
     onMessage: () -> Unit,
     onVoiceCall: () -> Unit,
     onToggleMute: () -> Unit,
     onToggleBlock: () -> Unit,
     onToggleVerified: (Boolean) -> Unit,
-    onReport: (String, String) -> Unit
+    onReport: (String, String) -> Unit,
+    onRemoveFromRoom: () -> Unit
 ) {
     BackHandler(onBack = onBack)
     val accent = LocalVeilAccent.current
     var showReportDialog by remember { mutableStateOf(false) }
+    var showRemoveConfirm by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -302,6 +310,16 @@ fun ProfileInspectorScreen(
                         modifier = Modifier.fillMaxWidth(),
                         tag = "inspector_report_button"
                     )
+                    if (isRoomCreator) {
+                        GlassSecondaryButton(
+                            text = "Remove from Room",
+                            icon = Icons.Outlined.PersonRemove,
+                            accentColor = CoralError,
+                            onClick = { showRemoveConfirm = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            tag = "inspector_remove_from_room_button"
+                        )
+                    }
                 }
             }
 
@@ -316,6 +334,55 @@ fun ProfileInspectorScreen(
             onSubmit = { reason, notes ->
                 onReport(reason, notes)
                 showReportDialog = false
+            }
+        )
+    }
+
+    if (showRemoveConfirm && isRoomCreator) {
+        AlertDialog(
+            onDismissRequest = { showRemoveConfirm = false },
+            containerColor = GlassSurfaceElevated,
+            titleContentColor = SnowPrimary,
+            textContentColor = SlateSecondary,
+            icon = {
+                Icon(
+                    imageVector = Icons.Outlined.PersonRemove,
+                    contentDescription = null,
+                    tint = CoralError,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Remove ${member.username}?",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                )
+            },
+            text = {
+                Text(
+                    text = "This removes ${member.username} from $roomName and revokes their room membership across the directory and private communities.",
+                    style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
+                )
+            },
+            confirmButton = {
+                GlassSecondaryButton(
+                    text = "Remove",
+                    icon = Icons.Outlined.PersonRemove,
+                    accentColor = CoralError,
+                    onClick = {
+                        showRemoveConfirm = false
+                        onRemoveFromRoom()
+                    },
+                    tag = "inspector_confirm_remove_button"
+                )
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showRemoveConfirm = false },
+                    modifier = Modifier.testTag("inspector_cancel_remove_button")
+                ) {
+                    Text("Cancel", color = SlateSecondary)
+                }
             }
         )
     }

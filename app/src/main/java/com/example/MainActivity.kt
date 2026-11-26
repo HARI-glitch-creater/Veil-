@@ -13,6 +13,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -41,7 +46,6 @@ import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.rounded.Add
@@ -50,6 +54,7 @@ import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Search
@@ -82,11 +87,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -104,6 +113,7 @@ import com.example.ui.VeilViewModel
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassPrimaryButton
 import com.example.ui.components.GlassSecondaryButton
+import com.example.ui.components.VeilDynamicLogo
 import com.example.ui.components.VeilObsidianBackdrop
 import com.example.ui.screens.ActiveVoiceCallOverlay
 import com.example.ui.screens.BackendSettingsScreen
@@ -216,6 +226,7 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
     val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
     val rooms by viewModel.rooms.collectAsStateWithLifecycle()
     val activeRoom by viewModel.activeRoom.collectAsStateWithLifecycle()
+    val isRoomCreator by viewModel.isActiveRoomCreator.collectAsStateWithLifecycle()
     val roomMembers by viewModel.activeRoomMembers.collectAsStateWithLifecycle()
     val communities by viewModel.activeRoomCommunities.collectAsStateWithLifecycle()
     val callHistory by viewModel.activeRoomCallHistory.collectAsStateWithLifecycle()
@@ -228,12 +239,12 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
 
     var currentScreen by remember { mutableStateOf<VeilScreen>(VeilScreen.BootLoading) }
+    var splashElapsed by remember { mutableStateOf(false) }
     var activeTab by remember { mutableStateOf(HomeTab.PROFILES) }
     var isBindingProfile by remember { mutableStateOf(false) }
 
     // Home UI transient overlays
     var showInviteSheet by remember { mutableStateOf(false) }
-    var inviteUriForSheet by remember { mutableStateOf("") }
     var showRoomSwitcherSheet by remember { mutableStateOf(false) }
     var showCreateCommunitySheet by remember { mutableStateOf(false) }
     var preselectedPeerForCommunity by remember { mutableStateOf<String?>(null) }
@@ -251,9 +262,15 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
         }
     }
 
+    // Hold Dark Glass Splash Screen for ~1.2s before routing into BootRoute
+    LaunchedEffect(Unit) {
+        delay(1200L)
+        splashElapsed = true
+    }
+
     // Boot state machine transition (only auto-drives initial BootLoading state)
-    LaunchedEffect(bootRoute) {
-        if (currentScreen == VeilScreen.BootLoading && bootRoute != null) {
+    LaunchedEffect(bootRoute, splashElapsed) {
+        if (currentScreen == VeilScreen.BootLoading && bootRoute != null && splashElapsed) {
             currentScreen = when (bootRoute!!) {
                 BootRoute.CREATE_PROFILE -> VeilScreen.CreateProfile
                 BootRoute.ROOM_GATEWAY -> VeilScreen.RoomGateway
@@ -316,18 +333,7 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
     VeilObsidianBackdrop {
         when (val screen = currentScreen) {
             VeilScreen.BootLoading -> {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        CircularProgressIndicator(color = accent.primary)
-                        Text(
-                            text = "Verifying Device-Bound Keys...",
-                            style = MaterialTheme.typography.bodyMedium.copy(color = SlateSecondary)
-                        )
-                    }
-                }
+                VeilSplashScreen(accentColor = accent.primary)
             }
 
             VeilScreen.CreateProfile -> {
@@ -423,18 +429,14 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                         members = roomMembers,
                         communities = communities,
                         callHistory = callHistory,
+                        isRoomCreator = isRoomCreator,
                         onSelectTab = { tab ->
                             activeTab = tab
                             if (tab == HomeTab.CALLS) {
                                 viewModel.markMissedCallsSeen(currentRoom.id)
                             }
                         },
-                        onOpenRoomInvite = {
-                            viewModel.loadInviteUri(currentRoom.id) { uri ->
-                                inviteUriForSheet = uri.orEmpty()
-                                showInviteSheet = true
-                            }
-                        },
+                        onOpenRoomInvite = { showInviteSheet = true },
                         onOpenSwitchRoom = { showRoomSwitcherSheet = true },
                         onOpenSettings = { currentScreen = VeilScreen.SettingsHub },
                         onOpenDirectChat = { member ->
@@ -456,6 +458,9 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                         },
                         onReportMember = { member, reason, notes ->
                             viewModel.reportMember(currentRoom.id, member.publicKey, reason, notes)
+                        },
+                        onRemoveMemberFromRoom = { member ->
+                            viewModel.removeMemberFromRoom(currentRoom.id, member)
                         },
                         onOpenCommunityChat = { comm ->
                             viewModel.clearCommunityUnread(comm.id)
@@ -586,8 +591,10 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                             viewModel.repository.crypto.formatSafetyNumberGroups(target.safetyNumber)
                         }
                         ProfileInspectorScreen(
+                            roomName = currentRoom.roomName,
                             member = target,
                             safetyNumberGroups = groups,
+                            isRoomCreator = isRoomCreator,
                             onBack = {
                                 currentScreen = if (screen.returnToChat) {
                                     VeilScreen.DirectChat(target.publicKey)
@@ -612,6 +619,13 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                             },
                             onReport = { reason, notes ->
                                 viewModel.reportMember(currentRoom.id, target.publicKey, reason, notes)
+                            },
+                            onRemoveFromRoom = {
+                                viewModel.removeMemberFromRoom(currentRoom.id, target) { res ->
+                                    if (res.isSuccess) {
+                                        currentScreen = VeilScreen.HomeShell
+                                    }
+                                }
                             }
                         )
                     }
@@ -657,12 +671,11 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
             }
         }
 
-        // Room Code & QR Invite Sheet
+        // Room 16-Character Veil Code Invite Sheet
         val roomForInvite = activeRoom
         if (showInviteSheet && roomForInvite != null) {
             RoomInviteSheet(
                 room = roomForInvite,
-                inviteUri = inviteUriForSheet,
                 onDismiss = { showInviteSheet = false },
                 onCopied = { viewModel.postBanner(it) }
             )
@@ -762,12 +775,104 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
 }
 
 @Composable
+private fun VeilSplashScreen(accentColor: Color) {
+    val logoScale = remember { Animatable(0.84f) }
+    val contentAlpha = remember { Animatable(0f) }
+
+    LaunchedEffect(Unit) {
+        contentAlpha.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 520, easing = FastOutSlowInEasing)
+        )
+    }
+    LaunchedEffect(Unit) {
+        logoScale.animateTo(
+            targetValue = 1f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessLow
+            )
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF090B0E))
+            .testTag("veil_splash_screen"),
+        contentAlignment = Alignment.Center
+    ) {
+        // Subtle obsidian radial glow matching active user accent
+        Box(
+            modifier = Modifier
+                .size(320.dp)
+                .background(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            accentColor.copy(alpha = 0.22f),
+                            accentColor.copy(alpha = 0.06f),
+                            Color.Transparent
+                        )
+                    ),
+                    shape = CircleShape
+                )
+        )
+
+        Column(
+            modifier = Modifier
+                .alpha(contentAlpha.value)
+                .padding(horizontal = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .scale(logoScale.value)
+                    .size(148.dp)
+                    .clip(RoundedCornerShape(36.dp))
+                    .background(Color(0xFF0F1014))
+                    .border(1.dp, accentColor.copy(alpha = 0.28f), RoundedCornerShape(36.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                VeilDynamicLogo(
+                    accentColor = accentColor,
+                    modifier = Modifier.size(134.dp),
+                    contentDescription = "Veil"
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = "Veil",
+                fontFamily = SpaceGroteskFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 34.sp,
+                letterSpacing = (-0.5).sp,
+                color = SnowPrimary,
+                modifier = Modifier.testTag("splash_title")
+            )
+
+            Text(
+                text = stringResource(R.string.splash_motto),
+                fontFamily = InterFamily,
+                fontWeight = FontWeight.Medium,
+                fontSize = 14.sp,
+                color = SlateSecondary,
+                modifier = Modifier.testTag("splash_motto")
+            )
+        }
+    }
+}
+
+@Composable
 private fun HomeShellScreen(
     activeRoom: VeilRoomEntity,
     activeTab: HomeTab,
     members: List<com.example.data.local.RoomMemberEntity>,
     communities: List<com.example.data.local.CommunityEntity>,
     callHistory: List<com.example.data.local.CallHistoryEntity>,
+    isRoomCreator: Boolean,
     onSelectTab: (HomeTab) -> Unit,
     onOpenRoomInvite: () -> Unit,
     onOpenSwitchRoom: () -> Unit,
@@ -778,6 +883,7 @@ private fun HomeShellScreen(
     onToggleMute: (com.example.data.local.RoomMemberEntity) -> Unit,
     onToggleBlock: (com.example.data.local.RoomMemberEntity) -> Unit,
     onReportMember: (com.example.data.local.RoomMemberEntity, String, String) -> Unit,
+    onRemoveMemberFromRoom: (com.example.data.local.RoomMemberEntity) -> Unit,
     onOpenCommunityChat: (com.example.data.local.CommunityEntity) -> Unit,
     onPlaceVoiceCall: (String, String, String) -> Unit
 ) {
@@ -966,15 +1072,15 @@ private fun HomeShellScreen(
                                     containerColor = GlassSurfaceElevated
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("Room Code & QR Invite", color = SnowPrimary) },
+                                        text = { Text("Room Veil Code", color = SnowPrimary) },
                                         leadingIcon = {
-                                            Icon(Icons.Outlined.QrCode2, contentDescription = null, tint = accent.highlight)
+                                            Icon(Icons.Rounded.Key, contentDescription = null, tint = accent.highlight)
                                         },
                                         onClick = {
                                             menuExpanded = false
                                             onOpenRoomInvite()
                                         },
-                                        modifier = Modifier.testTag("menu_room_code_qr")
+                                        modifier = Modifier.testTag("menu_room_veil_code")
                                     )
                                     DropdownMenuItem(
                                         text = { Text("Switch Room", color = SnowPrimary) },
@@ -1013,12 +1119,14 @@ private fun HomeShellScreen(
                             roomName = activeRoom.roomName,
                             members = members,
                             searchQuery = searchQuery,
+                            isRoomCreator = isRoomCreator,
                             onOpenDirectChat = onOpenDirectChat,
                             onInspectProfile = onInspectProfile,
                             onCreateCommunityWithPeer = onOpenCreateCommunity,
                             onToggleMute = onToggleMute,
                             onToggleBlock = onToggleBlock,
                             onReportMember = onReportMember,
+                            onRemoveMemberFromRoom = onRemoveMemberFromRoom,
                             onShareRoomInvite = onOpenRoomInvite
                         )
 

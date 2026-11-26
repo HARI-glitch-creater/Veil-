@@ -27,12 +27,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Key
-import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,7 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.crypto.ParsedRoomInvite
+import com.example.crypto.VeilCryptoEngine
 import com.example.data.BackendProfileDraft
 import com.example.data.local.AuthType
 import com.example.data.local.BackendType
@@ -63,7 +61,6 @@ import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassPrimaryButton
 import com.example.ui.components.GlassSecondaryButton
 import com.example.ui.components.GlassTextField
-import com.example.ui.components.QrScannerDialog
 import com.example.ui.theme.GlassBorderTop
 import com.example.ui.theme.GlassSurfaceSubtle
 import com.example.ui.theme.IceCyan
@@ -86,8 +83,6 @@ fun JoinRoomScreen(
     val profiles by viewModel.backendProfiles.collectAsStateWithLifecycle()
 
     var rawCode by remember { mutableStateOf("") }
-    var rawInviteUri by remember { mutableStateOf("") }
-    var parsedInvite by remember { mutableStateOf<ParsedRoomInvite?>(null) }
     var selectedProfileId by remember(profiles) {
         mutableStateOf(profiles.firstOrNull { it.isActive }?.id ?: profiles.firstOrNull()?.id)
     }
@@ -96,32 +91,10 @@ fun JoinRoomScreen(
     var backendType by remember { mutableStateOf(BackendType.SUPABASE) }
     var baseUrl by remember { mutableStateOf("") }
     var apiKey by remember { mutableStateOf("") }
-    var showScanner by remember { mutableStateOf(false) }
     var isBusy by remember { mutableStateOf(false) }
 
-    fun applyInviteString(raw: String) {
-        val invite = viewModel.repository.crypto.parseRoomInviteUri(raw)
-        if (invite != null) {
-            parsedInvite = invite
-            rawInviteUri = raw.trim()
-            rawCode = invite.veilCode
-            backendType = invite.backendType
-            baseUrl = invite.baseUrl
-            apiKey = invite.apiKey
-            showManualBackend = false
-            viewModel.postBanner("Loaded invite for ${invite.roomName}.")
-        } else {
-            val digitsOnly = raw.filter { it.isDigit() }
-            if (digitsOnly.length == 12) {
-                rawCode = digitsOnly
-                parsedInvite = null
-                rawInviteUri = ""
-                viewModel.postBanner("12-digit Veil Code pasted.")
-            } else {
-                viewModel.postBanner("No valid Veil Code or Room Invite found.")
-            }
-        }
-    }
+    val normalizedCode = remember(rawCode) { viewModel.repository.crypto.normalizeVeilCode(rawCode) }
+    val codeReady = normalizedCode.length == VeilCryptoEngine.VEIL_CODE_LENGTH
 
     Column(
         modifier = Modifier
@@ -176,37 +149,61 @@ fun JoinRoomScreen(
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(
-                            text = "ENTER 12-DIGIT VEIL CODE",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                color = SlateSecondary,
-                                letterSpacing = 1.4.sp
-                            )
-                        )
-
-                        val padded = rawCode.filter { it.isDigit() }.take(12).padEnd(12, '•')
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            listOf(padded.substring(0, 4), padded.substring(4, 8), padded.substring(8, 12)).forEach { block ->
+                            Text(
+                                text = "ENTER 16-CHARACTER VEIL CODE",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = SlateSecondary,
+                                    letterSpacing = 1.2.sp
+                                )
+                            )
+                            Text(
+                                text = "${normalizedCode.length} / 16",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = JetBrainsMonoFamily,
+                                    color = if (codeReady) accent.highlight else SlateMuted
+                                )
+                            )
+                        }
+
+                        // 4 blocks of 4 characters preview
+                        val padded = normalizedCode.padEnd(16, '•')
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                padded.substring(0, 4),
+                                padded.substring(4, 8),
+                                padded.substring(8, 12),
+                                padded.substring(12, 16)
+                            ).forEach { block ->
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .clip(RoundedCornerShape(14.dp))
+                                        .clip(RoundedCornerShape(12.dp))
                                         .background(GlassSurfaceSubtle)
-                                        .border(1.dp, GlassBorderTop, RoundedCornerShape(14.dp))
-                                        .padding(vertical = 12.dp),
+                                        .border(
+                                            1.dp,
+                                            if (block.contains('•')) GlassBorderTop else accent.highlight.copy(alpha = 0.4f),
+                                            RoundedCornerShape(12.dp)
+                                        )
+                                        .padding(vertical = 12.dp, horizontal = 2.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
                                         text = block,
-                                        style = MaterialTheme.typography.titleLarge.copy(
+                                        style = MaterialTheme.typography.titleMedium.copy(
                                             fontFamily = JetBrainsMonoFamily,
                                             color = if (block.contains('•')) SlateMuted else accent.highlight,
                                             fontWeight = FontWeight.SemiBold,
-                                            letterSpacing = 2.sp
+                                            letterSpacing = 1.sp
                                         ),
+                                        maxLines = 1,
                                         textAlign = TextAlign.Center
                                     )
                                 }
@@ -216,189 +213,141 @@ fun JoinRoomScreen(
                         GlassTextField(
                             value = rawCode,
                             onValueChange = { input ->
-                                rawCode = input.filter { it.isDigit() }.take(12)
-                                if (parsedInvite != null && parsedInvite?.veilCode != rawCode) {
-                                    parsedInvite = null
-                                    rawInviteUri = ""
-                                }
+                                rawCode = viewModel.repository.crypto.normalizeVeilCode(input)
                             },
-                            label = "12-Digit Veil Code",
-                            placeholder = "482910579364",
+                            label = "16-Character Veil Code (Letters, Digits & Symbols)",
+                            placeholder = "A7#K9m@P2\$xQ4!vZ",
                             monospace = true,
-                            keyboardType = KeyboardType.Number,
+                            keyboardType = KeyboardType.Ascii,
+                            supportingText = "Case-sensitive. Supports A-Z, a-z, 0-9, and symbols (!@#\$%^&*-_+=?).",
                             tag = "join_veil_code_input"
                         )
 
-                        Row(
+                        GlassSecondaryButton(
+                            text = "Paste Veil Code",
+                            icon = Icons.Rounded.ContentPaste,
+                            onClick = {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val pasted = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+                                val cleaned = viewModel.repository.crypto.normalizeVeilCode(pasted)
+                                if (cleaned.length == VeilCryptoEngine.VEIL_CODE_LENGTH) {
+                                    rawCode = cleaned
+                                    viewModel.postBanner("16-character Veil Code pasted.")
+                                } else {
+                                    viewModel.postBanner("Clipboard does not contain a valid 16-character Veil Code.")
+                                }
+                            },
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            GlassSecondaryButton(
-                                text = "Scan QR",
-                                icon = Icons.Rounded.QrCodeScanner,
-                                onClick = { showScanner = true },
-                                modifier = Modifier.weight(1f),
-                                accentColor = IceCyan,
-                                tag = "join_scan_qr_button"
-                            )
-                            GlassSecondaryButton(
-                                text = "Paste Invite",
-                                icon = Icons.Rounded.ContentPaste,
-                                onClick = {
-                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    val pasted = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-                                    applyInviteString(pasted)
-                                },
-                                modifier = Modifier.weight(1f),
-                                tag = "join_paste_invite_button"
-                            )
-                        }
+                            tag = "join_paste_code_button"
+                        )
                     }
                 }
 
-                if (parsedInvite != null) {
-                    val inv = parsedInvite!!
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(accent.container)
-                            .border(1.dp, accent.highlight.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.CheckCircle,
-                            contentDescription = null,
-                            tint = accent.highlight,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "${inv.roomName} · ${inv.backendType.name.lowercase().replaceFirstChar { it.uppercase() }}",
-                                style = MaterialTheme.typography.titleSmall.copy(color = SnowPrimary)
-                            )
-                            Text(
-                                text = "Host key and endpoint loaded automatically from invite",
-                                style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
-                            )
-                        }
-                    }
-                } else {
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(18.dp)
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { showManualBackend = !showManualBackend },
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "Room Database Connection",
-                                        style = MaterialTheme.typography.titleSmall.copy(color = SnowPrimary)
-                                    )
-                                    Text(
-                                        text = if (profiles.isNotEmpty() && !showManualBackend) {
-                                            "Using saved backend: ${profiles.firstOrNull { it.id == selectedProfileId }?.name ?: profiles.first().name}"
-                                        } else {
-                                            "Enter the host's Supabase or self-hosted URL and API key"
-                                        },
-                                        style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
-                                    )
-                                }
-                                Icon(
-                                    imageVector = if (showManualBackend) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                                    contentDescription = "Toggle backend details",
-                                    tint = SlateSecondary
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(18.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showManualBackend = !showManualBackend },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Room Database Connection",
+                                    style = MaterialTheme.typography.titleSmall.copy(color = SnowPrimary)
+                                )
+                                Text(
+                                    text = if (profiles.isNotEmpty() && !showManualBackend) {
+                                        "Using saved backend: ${profiles.firstOrNull { it.id == selectedProfileId }?.name ?: profiles.first().name}"
+                                    } else {
+                                        "Enter the host's Supabase or self-hosted URL and API key"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
                                 )
                             }
+                            Icon(
+                                imageVector = if (showManualBackend) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                contentDescription = "Toggle backend details",
+                                tint = SlateSecondary
+                            )
+                        }
 
-                            if (profiles.isNotEmpty() && !showManualBackend) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    profiles.take(3).forEach { p ->
-                                        val active = p.id == selectedProfileId
-                                        Box(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .background(if (active) accent.container else GlassSurfaceSubtle)
-                                                .border(
-                                                    1.dp,
-                                                    if (active) accent.highlight.copy(alpha = 0.45f) else GlassBorderTop,
-                                                    RoundedCornerShape(12.dp)
-                                                )
-                                                .clickable { selectedProfileId = p.id }
-                                                .padding(vertical = 8.dp, horizontal = 8.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = p.name,
-                                                style = MaterialTheme.typography.labelMedium.copy(
-                                                    color = if (active) accent.highlight else SlateSecondary
-                                                ),
-                                                maxLines = 1
+                        if (profiles.isNotEmpty() && !showManualBackend) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                profiles.take(3).forEach { p ->
+                                    val active = p.id == selectedProfileId
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(if (active) accent.container else GlassSurfaceSubtle)
+                                            .border(
+                                                1.dp,
+                                                if (active) accent.highlight.copy(alpha = 0.45f) else GlassBorderTop,
+                                                RoundedCornerShape(12.dp)
                                             )
-                                        }
+                                            .clickable { selectedProfileId = p.id }
+                                            .padding(vertical = 8.dp, horizontal = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = p.name,
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                color = if (active) accent.highlight else SlateSecondary
+                                            ),
+                                            maxLines = 1
+                                        )
                                     }
                                 }
                             }
+                        }
 
-                            AnimatedVisibility(visible = showManualBackend) {
-                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    BackendTypeSegment(
-                                        selected = backendType,
-                                        onSelect = { backendType = it }
-                                    )
-                                    GlassTextField(
-                                        value = baseUrl,
-                                        onValueChange = { baseUrl = it },
-                                        label = if (backendType == BackendType.SUPABASE) "Host Supabase URL" else "Host Server URL",
-                                        placeholder = if (backendType == BackendType.SUPABASE) {
-                                            "https://your-project.supabase.co"
-                                        } else {
-                                            "https://veil.homelab.local"
-                                        },
-                                        monospace = true,
-                                        keyboardType = KeyboardType.Uri,
-                                        tag = "join_backend_url_input"
-                                    )
-                                    GlassTextField(
-                                        value = apiKey,
-                                        onValueChange = { apiKey = it },
-                                        label = if (backendType == BackendType.SUPABASE) "Supabase API Key" else "Server Token / API Key",
-                                        isSecret = true,
-                                        monospace = true,
-                                        tag = "join_backend_key_input"
-                                    )
-                                }
+                        AnimatedVisibility(visible = showManualBackend) {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                BackendTypeSegment(
+                                    selected = backendType,
+                                    onSelect = { backendType = it }
+                                )
+                                GlassTextField(
+                                    value = baseUrl,
+                                    onValueChange = { baseUrl = it },
+                                    label = if (backendType == BackendType.SUPABASE) "Host Supabase URL" else "Host Server URL",
+                                    placeholder = if (backendType == BackendType.SUPABASE) {
+                                        "https://your-project.supabase.co"
+                                    } else {
+                                        "https://veil.homelab.local"
+                                    },
+                                    monospace = true,
+                                    keyboardType = KeyboardType.Uri,
+                                    tag = "join_backend_url_input"
+                                )
+                                GlassTextField(
+                                    value = apiKey,
+                                    onValueChange = { apiKey = it },
+                                    label = if (backendType == BackendType.SUPABASE) "Supabase API Key" else "Server Token / API Key",
+                                    isSecret = true,
+                                    monospace = true,
+                                    tag = "join_backend_key_input"
+                                )
                             }
                         }
                     }
                 }
 
-                val codeReady = rawCode.filter { it.isDigit() }.length == 12
                 GlassPrimaryButton(
                     text = if (isBusy) "Connecting & Deriving Keys..." else "Enter Veil Room",
                     icon = if (isBusy) null else Icons.Rounded.Key,
                     enabled = !isBusy && codeReady,
                     onClick = {
                         isBusy = true
-                        if (parsedInvite != null && rawInviteUri.isNotBlank()) {
-                            viewModel.joinRoomFromInviteUri(rawInviteUri) { res ->
-                                isBusy = false
-                                res.onSuccess { onJoinedRoom() }
-                                    .onFailure { viewModel.postBanner(it.message ?: "Unable to join room.") }
-                            }
-                        } else if (baseUrl.isNotBlank()) {
+                        if (baseUrl.isNotBlank()) {
                             viewModel.saveBackendProfile(
                                 BackendProfileDraft(
                                     name = if (backendType == BackendType.SUPABASE) "Shared Supabase" else "Shared Server",
@@ -410,7 +359,7 @@ fun JoinRoomScreen(
                             ) { savedRes ->
                                 savedRes.onSuccess { savedBackend ->
                                     viewModel.joinRoom(
-                                        veilCode = rawCode,
+                                        veilCode = normalizedCode,
                                         roomName = "Veil Room",
                                         backendProfileId = savedBackend.id
                                     ) { joinRes ->
@@ -425,7 +374,7 @@ fun JoinRoomScreen(
                             }
                         } else if (!selectedProfileId.isNullOrBlank()) {
                             viewModel.joinRoom(
-                                veilCode = rawCode,
+                                veilCode = normalizedCode,
                                 roomName = "Veil Room",
                                 backendProfileId = selectedProfileId!!
                             ) { joinRes ->
@@ -435,7 +384,7 @@ fun JoinRoomScreen(
                             }
                         } else {
                             isBusy = false
-                            viewModel.postBanner("Enter the host server URL or scan a Room QR invite.")
+                            viewModel.postBanner("Enter the host's Supabase or self-hosted server details.")
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -453,16 +402,5 @@ fun JoinRoomScreen(
                 }
             }
         }
-    }
-
-    if (showScanner) {
-        QrScannerDialog(
-            title = "Scan Veil Room QR",
-            onDismiss = { showScanner = false },
-            onScanned = { scanned ->
-                showScanner = false
-                applyInviteString(scanned)
-            }
-        )
     }
 }

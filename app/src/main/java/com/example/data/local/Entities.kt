@@ -93,6 +93,8 @@ data class VeilRoomEntity(
     val role: RoomRole,
     val backendProfileId: String,
     val isActiveRoom: Boolean = false,
+    val hostPublicKey: String = "",
+    val hostDeviceId: String = "",
     val peerHandle: String = "",
     val peerPublicKey: String = "",
     val encryptedRoomKey: String = "",

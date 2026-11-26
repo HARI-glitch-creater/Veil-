@@ -1,7 +1,6 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -28,7 +27,6 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Key
-import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -37,7 +35,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -49,11 +46,13 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassPill
+import com.example.ui.components.VeilDynamicLogo
 import com.example.ui.theme.GlassBorderBottom
 import com.example.ui.theme.GlassBorderTop
 import com.example.ui.theme.GlassSurfaceElevated
 import com.example.ui.theme.IceCyan
 import com.example.ui.theme.LocalVeilAccent
+import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SlateMuted
 import com.example.ui.theme.SlateSecondary
 import com.example.ui.theme.SnowPrimary
@@ -105,37 +104,24 @@ fun WelcomeRoleScreen(
         ) {
             Box(
                 modifier = Modifier
-                    .size(76.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                accent.primary.copy(alpha = 0.24f),
-                                GlassSurfaceElevated
-                            )
-                        )
-                    )
+                    .size(104.dp)
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(ObsidianBg)
                     .border(
-                        width = 1.dp,
-                        brush = Brush.linearGradient(listOf(accent.highlight.copy(alpha = 0.45f), GlassBorderBottom)),
-                        shape = RoundedCornerShape(24.dp)
+                        width = 1.2.dp,
+                        brush = Brush.linearGradient(
+                            listOf(accent.highlight.copy(alpha = 0.55f), GlassBorderBottom)
+                        ),
+                        shape = RoundedCornerShape(28.dp)
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(accent.primary.copy(alpha = 0.22f), Color.Transparent),
-                            center = Offset(size.width * 0.5f, size.height * 0.5f),
-                            radius = size.minDimension * 0.55f
-                        )
-                    )
-                }
-                Icon(
-                    imageVector = Icons.Rounded.Shield,
-                    contentDescription = "Veil emblem",
-                    tint = accent.highlight,
-                    modifier = Modifier.size(36.dp)
+                VeilDynamicLogo(
+                    accentColor = accent.primary,
+                    contentDescription = "Veil Logo",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(28.dp))
                 )
             }
 
@@ -151,7 +137,7 @@ fun WelcomeRoleScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Host your first encrypted Veil Room or join an existing room using a 12-digit Veil Code.",
+                text = "Host your first encrypted Veil Room or join an existing room using a 16-character Veil Code.",
                 style = MaterialTheme.typography.bodyMedium.copy(color = SlateSecondary),
                 textAlign = TextAlign.Center
             )
@@ -181,7 +167,7 @@ fun WelcomeRoleScreen(
             RoleChoiceGlassCard(
                 title = stringResource(R.string.role_join_title),
                 subtitle = stringResource(R.string.role_join_desc),
-                tagLabel = "12-Digit Veil Code or QR",
+                tagLabel = "16-Character Veil Code",
                 icon = Icons.Rounded.Key,
                 accentColor = IceCyan,
                 testTag = "role_join_card",

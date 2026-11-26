@@ -79,6 +79,9 @@ interface VeilDao {
     @Query("UPDATE veil_rooms SET lastMessagePreview = :preview, lastMessageTimestamp = :timestamp WHERE id = :roomId")
     suspend fun updateRoomLastMessage(roomId: String, preview: String, timestamp: Long)
 
+    @Query("UPDATE veil_rooms SET hostPublicKey = :hostPublicKey, hostDeviceId = :hostDeviceId WHERE id = :roomId")
+    suspend fun updateRoomHostInfo(roomId: String, hostPublicKey: String, hostDeviceId: String)
+
     @Query("DELETE FROM veil_rooms WHERE id = :roomId")
     suspend fun deleteRoom(roomId: String)
 
@@ -112,6 +115,9 @@ interface VeilDao {
 
     @Query("UPDATE room_members SET unreadCount = 0 WHERE roomId = :roomId AND publicKey = :publicKey")
     suspend fun clearMemberUnread(roomId: String, publicKey: String)
+
+    @Query("DELETE FROM room_members WHERE roomId = :roomId AND publicKey = :publicKey")
+    suspend fun deleteRoomMember(roomId: String, publicKey: String)
 
     @Query("DELETE FROM room_members WHERE roomId = :roomId")
     suspend fun deleteMembersForRoom(roomId: String)
@@ -147,8 +153,14 @@ interface VeilDao {
     @Query("SELECT * FROM community_members WHERE communityId = :communityId")
     suspend fun getCommunityMembers(communityId: String): List<CommunityMemberEntity>
 
+    @Query("UPDATE communities SET memberCount = :memberCount WHERE id = :communityId")
+    suspend fun updateCommunityMemberCount(communityId: String, memberCount: Int)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertCommunityMember(member: CommunityMemberEntity)
+
+    @Query("DELETE FROM community_members WHERE communityId = :communityId AND memberPublicKey = :memberPublicKey")
+    suspend fun deleteCommunityMemberByKey(communityId: String, memberPublicKey: String)
 
     // Messages (Scoped to Direct Peer or Community)
     @Query("SELECT * FROM messages WHERE roomId = :roomId AND channelType = :channelType AND targetId = :targetId ORDER BY timestamp ASC")

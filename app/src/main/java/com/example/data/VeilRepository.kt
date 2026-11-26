@@ -48,7 +48,6 @@ enum class BootRoute {
 
 data class HostRoomOutcome(
     val room: VeilRoomEntity,
-    val inviteUri: String,
     val warningMessage: String? = null
 )
 
@@ -505,12 +504,14 @@ class VeilRepository(context: Context) {
                 role = RoomRole.HOST,
                 backendProfileId = backend.id,
                 isActiveRoom = true,
+                hostPublicKey = profile.publicKey,
+                hostDeviceId = profile.deviceBindingId,
                 peerHandle = "",
                 peerPublicKey = "",
                 encryptedRoomKey = crypto.protectString(roomKeyB64),
                 safetyNumber = "",
                 isVerified = false,
-                lastMessagePreview = "Room ready. Share Veil Code to invite profiles."
+                lastMessagePreview = "Room ready. Share the 16-character Veil Code to invite profiles."
             )
             dao.upsertRoom(room)
             dao.setActiveRoom(room.id)
@@ -518,10 +519,8 @@ class VeilRepository(context: Context) {
             // Automatically create Default Room Community (<Room Name> — General)
             ensureDefaultRoomCommunity(room, config, profile)
 
-            val inviteUri = buildInviteUriForRoom(room, config, profile.username)
             HostRoomOutcome(
                 room = room,
-                inviteUri = inviteUri,
                 warningMessage = warnings.firstOrNull()
             )
         }
@@ -536,8 +535,10 @@ class VeilRepository(context: Context) {
         roomKeyBase64: String = ""
     ): Result<VeilRoomEntity> = withContext(Dispatchers.IO) {
         runCatching {
-            val cleanCode = veilCodeRaw.filter { it.isDigit() }
-            require(cleanCode.length == 12) { "Veil Code must be exactly 12 digits." }
+            val cleanCode = crypto.normalizeVeilCode(veilCodeRaw)
+            require(cleanCode.length == VeilCryptoEngine.VEIL_CODE_LENGTH) {
+                "Veil Code must be exactly 16 characters."
+            }
 
             val backend = dao.getBackendProfileById(backendProfileId)
                 ?: dao.getActiveBackendProfile()
@@ -562,20 +563,26 @@ class VeilRepository(context: Context) {
                 remoteRoom?.roomName?.ifBlank { roomNameHint } ?: roomNameHint
             ).trim().ifBlank { "Veil Room" }
             val resolvedHostKey = remoteRoom?.hostPublicKey?.ifBlank { hostPublicKey } ?: hostPublicKey
+            val resolvedHostDeviceId = remoteRoom?.hostDeviceId.orEmpty()
 
             val existing = dao.getRoomByCode(cleanCode)
             val roomId = existing?.id ?: UUID.randomUUID().toString()
             val effectiveRoomKey = roomKeyBase64.ifBlank {
                 existing?.let { crypto.unprotectString(it.encryptedRoomKey) }.orEmpty()
             }
+            val isCreatorSelf = resolvedHostKey.isNotBlank() &&
+                resolvedHostKey == profile.publicKey &&
+                (resolvedHostDeviceId.isBlank() || resolvedHostDeviceId == profile.deviceBindingId)
 
             val room = VeilRoomEntity(
                 id = roomId,
                 veilCode = cleanCode,
                 roomName = resolvedRoomName,
-                role = existing?.role ?: RoomRole.GUEST,
+                role = if (isCreatorSelf) RoomRole.HOST else (existing?.role ?: RoomRole.GUEST),
                 backendProfileId = backend.id,
                 isActiveRoom = true,
+                hostPublicKey = resolvedHostKey.ifBlank { existing?.hostPublicKey.orEmpty() },
+                hostDeviceId = resolvedHostDeviceId.ifBlank { existing?.hostDeviceId.orEmpty() },
                 peerHandle = hostHandle.ifBlank { existing?.peerHandle.orEmpty() },
                 peerPublicKey = resolvedHostKey,
                 encryptedRoomKey = if (effectiveRoomKey.isNotBlank()) crypto.protectString(effectiveRoomKey) else "",
@@ -625,32 +632,49 @@ class VeilRepository(context: Context) {
         }
     }
 
-    suspend fun joinRoomFromInviteUri(inviteUri: String): Result<VeilRoomEntity> = withContext(Dispatchers.IO) {
-        runCatching {
-            val parsed = crypto.parseRoomInviteUri(inviteUri)
-                ?: error("Invalid Veil Room invite link or QR code.")
-            val savedBackend = saveBackendProfile(
-                BackendProfileDraft(
-                    name = "${parsed.roomName} Server",
-                    backendType = parsed.backendType,
-                    baseUrl = parsed.baseUrl,
-                    apiKey = parsed.apiKey,
-                    authType = parsed.authType,
-                    authHeaderName = parsed.authHeaderName,
-                    webSocketUrl = parsed.webSocketUrl,
-                    mediaUploadUrl = parsed.mediaUploadUrl
-                ),
-                setActive = true
-            ).getOrThrow()
+    fun isUserRoomCreator(room: VeilRoomEntity?, profile: UserProfileEntity?): Boolean {
+        if (room == null || profile == null) return false
+        val keyMatches = room.hostPublicKey.isNotBlank() && room.hostPublicKey == profile.publicKey
+        val deviceMatches = room.hostDeviceId.isBlank() || room.hostDeviceId == profile.deviceBindingId
+        return keyMatches && deviceMatches
+    }
 
-            joinRoom(
-                veilCodeRaw = parsed.veilCode,
-                roomNameHint = parsed.roomName,
-                backendProfileId = savedBackend.id,
-                hostPublicKey = parsed.hostPublicKey,
-                hostHandle = parsed.hostHandle,
-                roomKeyBase64 = parsed.roomKeyBase64
-            ).getOrThrow()
+    suspend fun removeMemberFromRoom(
+        roomId: String,
+        targetPublicKey: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val room = dao.getRoomById(roomId) ?: error("Room not found.")
+            val me = ensureLocalProfile()
+            require(isUserRoomCreator(room, me)) {
+                "Only the room creator can remove profiles from this room."
+            }
+            require(targetPublicKey.isNotBlank() && targetPublicKey != me.publicKey) {
+                "Cannot remove your own profile."
+            }
+
+            val communities = dao.getCommunitiesForRoom(roomId)
+            val config = resolveBackendConfigForRoom(room)
+            if (config != null) {
+                backendClient.removeMemberFromRoom(
+                    config = config,
+                    roomCode = room.veilCode,
+                    targetPublicKey = targetPublicKey,
+                    roomCommunityIds = communities.map { it.id }
+                ).getOrThrow()
+            }
+
+            // Purge from local room directory and community rosters immediately.
+            dao.deleteRoomMember(roomId, targetPublicKey)
+            for (comm in communities) {
+                dao.deleteCommunityMemberByKey(comm.id, targetPublicKey)
+                val updatedCount = if (comm.isDefault) {
+                    dao.getRoomMembers(roomId).size + 1
+                } else {
+                    maxOf(1, dao.getCommunityMembers(comm.id).size)
+                }
+                dao.updateCommunityMemberCount(comm.id, updatedCount)
+            }
         }
     }
 
@@ -668,35 +692,6 @@ class VeilRepository(context: Context) {
         if (remaining.isNotEmpty() && remaining.none { it.isActiveRoom }) {
             dao.setActiveRoom(remaining.first().id)
         }
-    }
-
-    suspend fun buildInviteUriForRoom(roomId: String): String? = withContext(Dispatchers.IO) {
-        val room = dao.getRoomById(roomId) ?: return@withContext null
-        val config = resolveBackendConfigForRoom(room) ?: return@withContext null
-        val profile = ensureLocalProfile()
-        buildInviteUriForRoom(room, config, profile.username)
-    }
-
-    private fun buildInviteUriForRoom(
-        room: VeilRoomEntity,
-        config: ResolvedBackendConfig,
-        username: String
-    ): String {
-        val roomKey = crypto.unprotectString(room.encryptedRoomKey)
-        return crypto.buildRoomInviteUri(
-            veilCode = room.veilCode,
-            roomName = room.roomName,
-            backendType = config.profile.backendType,
-            baseUrl = config.profile.baseUrl,
-            apiKey = config.apiKey,
-            authType = config.profile.authType,
-            authHeaderName = config.profile.authHeaderName,
-            hostPublicKey = crypto.getOrCreateIdentity().publicKeyBase64,
-            hostHandle = username,
-            roomKeyBase64 = roomKey,
-            webSocketUrl = config.profile.webSocketUrl,
-            mediaUploadUrl = config.profile.mediaUploadUrl
-        )
     }
 
     // Moderation & Verification
@@ -1245,12 +1240,26 @@ class VeilRepository(context: Context) {
     suspend fun syncRoom(
         roomId: String,
         onNewMessageAlert: ((IncomingMessageAlert) -> Unit)? = null,
-        onIncomingCallSignal: ((VeilRoomEntity, RemoteCallSignal, RoomMemberEntity?) -> Unit)? = null
+        onIncomingCallSignal: ((VeilRoomEntity, RemoteCallSignal, RoomMemberEntity?) -> Unit)? = null,
+        onRemovedFromRoom: ((String) -> Unit)? = null
     ): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
-            val room = dao.getRoomById(roomId) ?: return@runCatching 0
+            var room = dao.getRoomById(roomId) ?: return@runCatching 0
             val config = resolveBackendConfigForRoom(room) ?: return@runCatching 0
             val me = ensureLocalProfile()
+
+            // Refresh stealth room creator metadata if not yet cached locally.
+            if (room.hostPublicKey.isBlank() || room.hostDeviceId.isBlank()) {
+                val remoteRoom = backendClient.fetchRoom(config, room.veilCode).getOrNull()
+                if (remoteRoom != null && remoteRoom.hostPublicKey.isNotBlank()) {
+                    dao.updateRoomHostInfo(room.id, remoteRoom.hostPublicKey, remoteRoom.hostDeviceId)
+                    room = room.copy(
+                        hostPublicKey = remoteRoom.hostPublicKey,
+                        hostDeviceId = remoteRoom.hostDeviceId
+                    )
+                }
+            }
+
             val roomKeyBytes = deriveRoomKey(room)
 
             // 1. Flush queued offline outgoing messages
@@ -1276,9 +1285,34 @@ class VeilRepository(context: Context) {
                 }
             }
 
-            // 2. Sync room members (Profiles directory)
+            // 2. Sync room members (Profiles directory) & reconcile creator removals
             val existingMembers = dao.getRoomMembers(roomId).associateBy { it.publicKey }
-            val remoteMembers = backendClient.fetchMembers(config, room.veilCode).getOrDefault(emptyList())
+            val membersResult = backendClient.fetchMembers(config, room.veilCode)
+            val remoteMembers = membersResult.getOrDefault(emptyList())
+
+            if (membersResult.isSuccess) {
+                val remoteKeys = remoteMembers.map { it.publicKey }.toHashSet()
+                // If the creator removed this device from veil_members (after initial join grace window), revoke local room.
+                val pastGraceWindow = (System.currentTimeMillis() - room.createdAt) > 15_000L
+                if (!isUserRoomCreator(room, me) &&
+                    pastGraceWindow &&
+                    remoteKeys.isNotEmpty() &&
+                    me.publicKey !in remoteKeys
+                ) {
+                    val removedRoomName = room.roomName
+                    deleteRoom(roomId)
+                    onRemovedFromRoom?.invoke(removedRoomName)
+                    return@runCatching 0
+                }
+
+                // Prune any peers who were removed from the room by the creator.
+                for ((localPub, _) in existingMembers) {
+                    if (localPub !in remoteKeys) {
+                        dao.deleteRoomMember(roomId, localPub)
+                    }
+                }
+            }
+
             for (rm in remoteMembers) {
                 if (rm.publicKey == me.publicKey) continue
                 val prev = existingMembers[rm.publicKey]

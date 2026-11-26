@@ -37,7 +37,6 @@ import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Storage
@@ -67,6 +66,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
 import com.example.crypto.VeilCryptoEngine
 import com.example.data.BackendProfileDraft
 import com.example.data.HostRoomOutcome
@@ -80,7 +80,6 @@ import com.example.ui.components.GlassPill
 import com.example.ui.components.GlassPrimaryButton
 import com.example.ui.components.GlassSecondaryButton
 import com.example.ui.components.GlassTextField
-import com.example.ui.components.QrCodeView
 import com.example.ui.theme.AmberContainer
 import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.CoralContainer
@@ -200,11 +199,7 @@ fun HostRoomScreen(
                     formattedCode = viewModel.repository.crypto.formatVeilCode(outcome.room.veilCode),
                     onCopyCode = {
                         copyToClipboard("Veil Code", outcome.room.veilCode)
-                        viewModel.postBanner("12-digit Veil Code copied.")
-                    },
-                    onCopyInvite = {
-                        copyToClipboard("Veil Invite", outcome.inviteUri)
-                        viewModel.postBanner("Room invite link copied.")
+                        viewModel.postBanner("16-character Veil Code copied.")
                     },
                     onEnterRoom = onEnterRoom
                 )
@@ -542,7 +537,7 @@ fun HostRoomScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "Veil v1.0.1 Zero-Knowledge SQL Schema (8 Tables)",
+                    text = "Veil v${BuildConfig.VERSION_NAME} Zero-Knowledge SQL Schema (8 Tables)",
                     style = MaterialTheme.typography.titleLarge.copy(color = SnowPrimary)
                 )
                 Text(
@@ -567,7 +562,7 @@ fun HostRoomScreen(
                     text = "Copy SQL to Clipboard",
                     icon = Icons.Rounded.ContentCopy,
                     onClick = {
-                        copyToClipboard("Veil v1.0.1 SQL Schema", VeilBackendClient.SUPABASE_SQL_SCHEMA)
+                        copyToClipboard("Veil v${BuildConfig.VERSION_NAME} SQL Schema", VeilBackendClient.SUPABASE_SQL_SCHEMA)
                         viewModel.postBanner("8-table Veil SQL schema copied.")
                         showSqlSheet = false
                     },
@@ -585,10 +580,11 @@ private fun HostRoomCreatedContent(
     outcome: HostRoomOutcome,
     formattedCode: String,
     onCopyCode: () -> Unit,
-    onCopyInvite: () -> Unit,
     onEnterRoom: () -> Unit
 ) {
     val accent = LocalVeilAccent.current
+    val codeBlocks = outcome.room.veilCode.chunked(4)
+
     Column(
         modifier = Modifier
             .widthIn(max = 520.dp)
@@ -612,7 +608,7 @@ private fun HostRoomCreatedContent(
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
                     text = outcome.room.roomName,
@@ -622,51 +618,68 @@ private fun HostRoomCreatedContent(
                     )
                 )
                 Text(
-                    text = "12-DIGIT VEIL CODE",
+                    text = "16-CHARACTER VEIL CODE",
                     style = MaterialTheme.typography.labelSmall.copy(
                         color = SlateSecondary,
                         letterSpacing = 1.6.sp
                     )
                 )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("generated_veil_code_text"),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    codeBlocks.forEach { block ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(GlassSurfaceSubtle)
+                                .border(1.dp, accent.highlight.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                                .padding(vertical = 14.dp, horizontal = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = block,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontFamily = JetBrainsMonoFamily,
+                                    color = accent.highlight,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 1.sp
+                                ),
+                                maxLines = 1,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+
                 Text(
                     text = formattedCode,
-                    style = MaterialTheme.typography.headlineMedium.copy(
+                    style = MaterialTheme.typography.labelLarge.copy(
                         fontFamily = JetBrainsMonoFamily,
-                        color = accent.highlight,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 1.sp
+                        color = SnowPrimary,
+                        letterSpacing = 0.8.sp
                     ),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.testTag("generated_veil_code_text")
+                    textAlign = TextAlign.Center
                 )
 
-                QrCodeView(payload = outcome.inviteUri, sizeDp = 196.dp)
-
                 Text(
-                    text = "Share the 12-digit Veil Code or Room QR so peers can join ${outcome.room.roomName} with zero-knowledge E2EE.",
+                    text = "Share this exact 16-character Veil Code (and your server connection details if needed) so peers can join ${outcome.room.roomName} with zero-knowledge E2EE.",
                     style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary),
                     textAlign = TextAlign.Center
                 )
 
-                Row(
+                GlassSecondaryButton(
+                    text = "Copy 16-Character Veil Code",
+                    icon = Icons.Rounded.ContentCopy,
+                    accentColor = accent.highlight,
+                    onClick = onCopyCode,
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    GlassSecondaryButton(
-                        text = "Copy Code",
-                        icon = Icons.Rounded.ContentCopy,
-                        onClick = onCopyCode,
-                        modifier = Modifier.weight(1f),
-                        tag = "copy_veil_code_button"
-                    )
-                    GlassSecondaryButton(
-                        text = "Copy Invite",
-                        icon = Icons.Rounded.Link,
-                        onClick = onCopyInvite,
-                        modifier = Modifier.weight(1f),
-                        tag = "copy_invite_uri_button"
-                    )
-                }
+                    tag = "copy_veil_code_button"
+                )
             }
         }
 

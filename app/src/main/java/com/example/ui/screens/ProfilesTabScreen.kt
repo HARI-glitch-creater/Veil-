@@ -25,11 +25,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.GroupAdd
+import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material.icons.outlined.PersonSearch
-import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.GroupAdd
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.RadioButtonChecked
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material3.AlertDialog
@@ -87,18 +88,21 @@ fun ProfilesTabScreen(
     roomName: String,
     members: List<RoomMemberEntity>,
     searchQuery: String,
+    isRoomCreator: Boolean,
     onOpenDirectChat: (RoomMemberEntity) -> Unit,
     onInspectProfile: (RoomMemberEntity) -> Unit,
     onCreateCommunityWithPeer: (RoomMemberEntity?) -> Unit,
     onToggleMute: (RoomMemberEntity) -> Unit,
     onToggleBlock: (RoomMemberEntity) -> Unit,
     onReportMember: (RoomMemberEntity, String, String) -> Unit,
+    onRemoveMemberFromRoom: (RoomMemberEntity) -> Unit,
     onShareRoomInvite: () -> Unit
 ) {
     val accent = LocalVeilAccent.current
     val haptic = LocalHapticFeedback.current
     var longPressedMember by remember { mutableStateOf<RoomMemberEntity?>(null) }
     var reportingMember by remember { mutableStateOf<RoomMemberEntity?>(null) }
+    var removingMember by remember { mutableStateOf<RoomMemberEntity?>(null) }
 
     val filteredMembers = remember(members, searchQuery) {
         if (searchQuery.isBlank()) members
@@ -127,7 +131,7 @@ fun ProfilesTabScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.QrCode2,
+                            imageVector = Icons.Rounded.Key,
                             contentDescription = null,
                             tint = accent.highlight,
                             modifier = Modifier.size(40.dp)
@@ -141,7 +145,7 @@ fun ProfilesTabScreen(
                         )
                         Text(
                             text = if (searchQuery.isBlank()) {
-                                "Share this room's 12-digit Veil Code or QR invite so peers can join and appear in this directory."
+                                "Share this room's 16-character Veil Code so peers can join and appear in this directory."
                             } else {
                                 "Try a different username or motto filter."
                             },
@@ -149,8 +153,8 @@ fun ProfilesTabScreen(
                         )
                         if (searchQuery.isBlank()) {
                             GlassPrimaryButton(
-                                text = "Share Room Code & QR",
-                                icon = Icons.Outlined.QrCode2,
+                                text = "View 16-Char Veil Code",
+                                icon = Icons.Rounded.Key,
                                 onClick = onShareRoomInvite,
                                 tag = "profiles_empty_share_invite"
                             )
@@ -293,6 +297,18 @@ fun ProfilesTabScreen(
                     },
                     tag = "profile_menu_report"
                 )
+                if (isRoomCreator) {
+                    ContextActionRow(
+                        icon = Icons.Outlined.PersonRemove,
+                        label = "Remove from Room",
+                        tint = CoralError,
+                        onClick = {
+                            longPressedMember = null
+                            removingMember = targetMember
+                        },
+                        tag = "profile_menu_remove_from_room"
+                    )
+                }
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
@@ -307,6 +323,57 @@ fun ProfilesTabScreen(
             onSubmit = { reason, notes ->
                 onReportMember(reportTarget, reason, notes)
                 reportingMember = null
+            }
+        )
+    }
+
+    // Stealth Creator-Only Member Removal Confirmation
+    val removeTarget = removingMember
+    if (removeTarget != null && isRoomCreator) {
+        AlertDialog(
+            onDismissRequest = { removingMember = null },
+            containerColor = GlassSurfaceElevated,
+            titleContentColor = SnowPrimary,
+            textContentColor = SlateSecondary,
+            icon = {
+                Icon(
+                    imageVector = Icons.Outlined.PersonRemove,
+                    contentDescription = null,
+                    tint = CoralError,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Remove ${removeTarget.username}?",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                )
+            },
+            text = {
+                Text(
+                    text = "This removes ${removeTarget.username} from $roomName and revokes their room membership across the directory and private communities.",
+                    style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
+                )
+            },
+            confirmButton = {
+                GlassSecondaryButton(
+                    text = "Remove",
+                    icon = Icons.Outlined.PersonRemove,
+                    accentColor = CoralError,
+                    onClick = {
+                        onRemoveMemberFromRoom(removeTarget)
+                        removingMember = null
+                    },
+                    tag = "confirm_remove_member_button"
+                )
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { removingMember = null },
+                    modifier = Modifier.testTag("cancel_remove_member_button")
+                ) {
+                    Text("Cancel", color = SlateSecondary)
+                }
             }
         )
     }

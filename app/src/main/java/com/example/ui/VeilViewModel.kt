@@ -28,6 +28,7 @@ import com.example.media.VoiceNoteManager
 import com.example.media.VoicePlaybackState
 import com.example.media.VoiceRecordingState
 import com.example.notifications.VeilNotificationHelper
+import com.example.ui.theme.LauncherIconManager
 import com.example.ui.theme.ThemePreferences
 import com.example.ui.theme.VeilAccentPresets
 import com.example.update.ReleaseUpdateInfo
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -95,6 +97,14 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
     val activeRoom: StateFlow<VeilRoomEntity?> = repository.observeActiveRoom()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /**
+     * Stealth Room Creator flag: true ONLY when the current device-bound user matches
+     * veil_rooms.host_public_key (and host_device_id) for the active room.
+     */
+    val isActiveRoomCreator: StateFlow<Boolean> = combine(activeRoom, userProfile) { room, profile ->
+        repository.isUserRoomCreator(room, profile)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     val activeRoomMembers: StateFlow<List<RoomMemberEntity>> = activeRoom.flatMapLatest { room ->
         if (room != null) repository.observeRoomMembers(room.id) else flowOf(emptyList())
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -128,6 +138,7 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
 
     private var activeSyncJob: Job? = null
     private var realtimeJob: Job? = null
+    private var launcherIconJob: Job? = null
     private var notifCounter = 1000
 
     init {
@@ -230,10 +241,16 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Theme customization
+    // Theme customization & Dynamic Home Screen Launcher Icon switching
     fun setAccentColor(color: Color) {
         viewModelScope.launch {
             themePreferences.saveAccentColor(color)
+        }
+        // Debounce PackageManager alias switching so dragging the HSV color wheel remains smooth.
+        launcherIconJob?.cancel()
+        launcherIconJob = viewModelScope.launch {
+            delay(500L)
+            LauncherIconManager.applyLauncherIconForColor(getApplication(), color)
         }
     }
 
@@ -307,16 +324,6 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun joinRoomFromInviteUri(inviteUri: String, onResult: (Result<VeilRoomEntity>) -> Unit) {
-        viewModelScope.launch {
-            val res = repository.joinRoomFromInviteUri(inviteUri)
-            if (res.isSuccess) {
-                _bootRoute.value = BootRoute.HOME
-            }
-            onResult(res)
-        }
-    }
-
     fun switchActiveRoom(roomId: String) {
         viewModelScope.launch {
             repository.setActiveRoom(roomId)
@@ -334,9 +341,22 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun loadInviteUri(roomId: String, onResult: (String?) -> Unit) {
+    /**
+     * Exclusive Stealth Room Creator action: removes a profile from the active room.
+     */
+    fun removeMemberFromRoom(
+        roomId: String,
+        member: RoomMemberEntity,
+        onComplete: (Result<Unit>) -> Unit = {}
+    ) {
         viewModelScope.launch {
-            onResult(repository.buildInviteUriForRoom(roomId))
+            val res = repository.removeMemberFromRoom(roomId, member.publicKey)
+            res.onSuccess {
+                postBanner("${member.username} was removed from the room.")
+            }.onFailure { err ->
+                postBanner(err.message ?: "Unable to remove profile from room.")
+            }
+            onComplete(res)
         }
     }
 
@@ -610,6 +630,9 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
                     isPeerMuted = peer?.isMuted ?: false,
                     isPeerBlocked = peer?.isBlocked ?: false
                 )
+            },
+            onRemovedFromRoom = { removedRoomName ->
+                postBanner("You were removed from '$removedRoomName'.")
             }
         )
     }

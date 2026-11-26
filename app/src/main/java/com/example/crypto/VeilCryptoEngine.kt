@@ -36,21 +36,6 @@ data class EncryptedEnvelope(
     val ciphertextBase64: String
 )
 
-data class ParsedRoomInvite(
-    val veilCode: String,
-    val roomName: String,
-    val backendType: BackendType,
-    val baseUrl: String,
-    val apiKey: String,
-    val authType: AuthType,
-    val authHeaderName: String,
-    val hostPublicKey: String,
-    val hostHandle: String,
-    val roomKeyBase64: String,
-    val webSocketUrl: String = "",
-    val mediaUploadUrl: String = ""
-)
-
 class VeilCryptoEngine(context: Context) {
 
     private val prefs = context.applicationContext.getSharedPreferences(
@@ -115,14 +100,57 @@ class VeilCryptoEngine(context: Context) {
         }.getOrDefault("")
     }
 
+    /**
+     * Generates a cryptographically secure 16-character Veil Code across uppercase letters,
+     * lowercase letters, digits 0-9, and symbols (!@#$%^&*-_+=?) using SecureRandom.
+     */
     fun generateVeilCode(): String {
-        val digits = StringBuilder(12)
-        repeat(12) { digits.append(secureRandom.nextInt(10)) }
-        return digits.toString()
+        val chars = CharArray(VEIL_CODE_LENGTH)
+        // Guarantee at least one character from each category for high entropy and visual variety.
+        chars[0] = UPPER_CHARS[secureRandom.nextInt(UPPER_CHARS.length)]
+        chars[1] = LOWER_CHARS[secureRandom.nextInt(LOWER_CHARS.length)]
+        chars[2] = DIGIT_CHARS[secureRandom.nextInt(DIGIT_CHARS.length)]
+        chars[3] = SYMBOL_CHARS[secureRandom.nextInt(SYMBOL_CHARS.length)]
+        for (i in 4 until VEIL_CODE_LENGTH) {
+            chars[i] = FULL_CODE_CHARSET[secureRandom.nextInt(FULL_CODE_CHARSET.length)]
+        }
+        // Fisher-Yates shuffle with SecureRandom
+        for (i in chars.lastIndex downTo 1) {
+            val j = secureRandom.nextInt(i + 1)
+            val tmp = chars[i]
+            chars[i] = chars[j]
+            chars[j] = tmp
+        }
+        return String(chars)
     }
 
+    /**
+     * Normalizes user-entered or pasted 16-character Veil Codes by removing display block
+     * separators (" - ") and whitespace while preserving symbols (including hyphens inside blocks).
+     */
+    fun normalizeVeilCode(raw: String): String {
+        val withoutDisplaySeps = raw.trim().replace(" - ", "")
+        val compact = withoutDisplaySeps.filter { it in '!'..'~' }
+        val unwrapped = if (
+            compact.length == 19 &&
+            compact[4] == '-' &&
+            compact[9] == '-' &&
+            compact[14] == '-'
+        ) {
+            compact.substring(0, 4) +
+                compact.substring(5, 9) +
+                compact.substring(10, 14) +
+                compact.substring(15, 19)
+        } else {
+            compact
+        }
+        return unwrapped.take(VEIL_CODE_LENGTH)
+    }
+
+    fun isValidVeilCode(raw: String): Boolean = normalizeVeilCode(raw).length == VEIL_CODE_LENGTH
+
     fun formatVeilCode(raw: String): String {
-        val clean = raw.filter { it.isDigit() }.take(12)
+        val clean = normalizeVeilCode(raw)
         return clean.chunked(4).joinToString(" - ")
     }
 
@@ -302,64 +330,6 @@ class VeilCryptoEngine(context: Context) {
             .toString()
     }
 
-    fun buildRoomInviteUri(
-        veilCode: String,
-        roomName: String,
-        backendType: BackendType,
-        baseUrl: String,
-        apiKey: String,
-        authType: AuthType,
-        authHeaderName: String,
-        hostPublicKey: String,
-        hostHandle: String,
-        roomKeyBase64: String,
-        webSocketUrl: String = "",
-        mediaUploadUrl: String = ""
-    ): String {
-        val builder = Uri.Builder()
-            .scheme("veil")
-            .authority("room")
-            .appendQueryParameter("code", veilCode.filter { it.isDigit() })
-            .appendQueryParameter("name", roomName)
-            .appendQueryParameter("type", backendType.name)
-            .appendQueryParameter("url", baseUrl)
-            .appendQueryParameter("key", apiKey)
-            .appendQueryParameter("auth", authType.name)
-            .appendQueryParameter("ah", authHeaderName)
-            .appendQueryParameter("pub", hostPublicKey)
-            .appendQueryParameter("host", hostHandle)
-            .appendQueryParameter("rk", roomKeyBase64)
-        if (webSocketUrl.isNotBlank()) builder.appendQueryParameter("ws", webSocketUrl)
-        if (mediaUploadUrl.isNotBlank()) builder.appendQueryParameter("s3", mediaUploadUrl)
-        return builder.build().toString()
-    }
-
-    fun parseRoomInviteUri(raw: String): ParsedRoomInvite? {
-        val trimmed = raw.trim()
-        if (!trimmed.startsWith("veil://room")) return null
-        return runCatching {
-            val uri = Uri.parse(trimmed)
-            val code = uri.getQueryParameter("code")?.filter { it.isDigit() } ?: return null
-            if (code.length != 12) return null
-            val typeStr = uri.getQueryParameter("type") ?: BackendType.SUPABASE.name
-            val authStr = uri.getQueryParameter("auth") ?: AuthType.BEARER.name
-            ParsedRoomInvite(
-                veilCode = code,
-                roomName = uri.getQueryParameter("name").orEmpty().ifBlank { "Veil Room" },
-                backendType = runCatching { BackendType.valueOf(typeStr) }.getOrDefault(BackendType.SUPABASE),
-                baseUrl = uri.getQueryParameter("url").orEmpty(),
-                apiKey = uri.getQueryParameter("key").orEmpty(),
-                authType = runCatching { AuthType.valueOf(authStr) }.getOrDefault(AuthType.BEARER),
-                authHeaderName = uri.getQueryParameter("ah").orEmpty().ifBlank { "X-API-Key" },
-                hostPublicKey = uri.getQueryParameter("pub").orEmpty(),
-                hostHandle = uri.getQueryParameter("host").orEmpty().ifBlank { "Host" },
-                roomKeyBase64 = uri.getQueryParameter("rk").orEmpty(),
-                webSocketUrl = uri.getQueryParameter("ws").orEmpty(),
-                mediaUploadUrl = uri.getQueryParameter("s3").orEmpty()
-            )
-        }.getOrNull()
-    }
-
     private fun loadLocalPrivateKey(): PrivateKey {
         getOrCreateIdentity()
         val wrapped = prefs.getString(KEY_PRIV_WRAPPED, null)
@@ -441,6 +411,13 @@ class VeilCryptoEngine(context: Context) {
     private fun decodeB64(input: String): ByteArray = Base64.decode(input.trim(), Base64.DEFAULT)
 
     companion object {
+        const val VEIL_CODE_LENGTH = 16
+        private const val UPPER_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        private const val LOWER_CHARS = "abcdefghijklmnopqrstuvwxyz"
+        private const val DIGIT_CHARS = "0123456789"
+        private const val SYMBOL_CHARS = "!@#\$%^&*-_+=?"
+        private const val FULL_CODE_CHARSET = UPPER_CHARS + LOWER_CHARS + DIGIT_CHARS + SYMBOL_CHARS
+
         private const val PREFS_NAME = "veil_identity_keystore_prefs"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val MASTER_KEY_ALIAS = "veil_keystore_master_v1"

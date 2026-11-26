@@ -69,7 +69,7 @@ class VeilTypeConverters {
         MessageEntity::class,
         CallHistoryEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(VeilTypeConverters::class)

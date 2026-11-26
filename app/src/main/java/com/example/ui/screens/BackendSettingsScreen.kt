@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
 import com.example.data.BackendProfileDraft
 import com.example.data.local.AuthType
 import com.example.data.local.BackendProfileEntity
@@ -264,7 +265,7 @@ fun BackendSettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "Veil v1.0.1 Encrypted Tables SQL",
+                    text = "Veil v${BuildConfig.VERSION_NAME} Encrypted Tables SQL",
                     style = MaterialTheme.typography.titleLarge.copy(color = SnowPrimary)
                 )
                 GlassCard(
