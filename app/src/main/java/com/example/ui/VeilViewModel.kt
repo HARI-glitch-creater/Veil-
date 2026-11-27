@@ -32,8 +32,10 @@ import com.example.ui.theme.LauncherIconManager
 import com.example.ui.theme.ThemePreferences
 import com.example.ui.theme.VeilAccentPresets
 import com.example.update.ReleaseUpdateInfo
+import com.example.update.UpdateDownloadState
 import com.example.update.UpdateManager
 import com.example.workers.VeilWorkScheduler
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -127,11 +129,19 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
     private val _availableUpdate = MutableStateFlow<ReleaseUpdateInfo?>(null)
     val availableUpdate: StateFlow<ReleaseUpdateInfo?> = _availableUpdate.asStateFlow()
 
+    private val _pendingInstallPermissionUpdate = MutableStateFlow<ReleaseUpdateInfo?>(null)
+    val pendingInstallPermissionUpdate: StateFlow<ReleaseUpdateInfo?> = _pendingInstallPermissionUpdate.asStateFlow()
+
+    private val _updateDownloadState = MutableStateFlow(UpdateDownloadState())
+    val updateDownloadState: StateFlow<UpdateDownloadState> = _updateDownloadState.asStateFlow()
+
     private val _isCheckingUpdate = MutableStateFlow(false)
     val isCheckingUpdate: StateFlow<Boolean> = _isCheckingUpdate.asStateFlow()
 
     private val _statusBanner = MutableStateFlow<String?>(null)
     val statusBanner: StateFlow<String?> = _statusBanner.asStateFlow()
+
+    private var awaitingInstallPermissionResume: ReleaseUpdateInfo? = null
 
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
@@ -542,6 +552,12 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Updates
+    fun cleanupObsoleteUpdateApks() {
+        viewModelScope.launch(Dispatchers.IO) {
+            updateManager.cleanupObsoleteApks()
+        }
+    }
+
     fun checkForUpdates(silent: Boolean = false) {
         viewModelScope.launch {
             _isCheckingUpdate.value = true
@@ -550,7 +566,7 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
             res.onSuccess { info ->
                 _availableUpdate.value = info
                 if (!silent && info == null) {
-                    postBanner("Veil is up to date.")
+                    postBanner("Veil is up to date (v${com.example.BuildConfig.VERSION_NAME}).")
                 }
             }.onFailure { err ->
                 if (!silent) {
@@ -564,15 +580,56 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
         _availableUpdate.value = null
     }
 
+    fun dismissInstallPermissionDialog() {
+        _pendingInstallPermissionUpdate.value = null
+        awaitingInstallPermissionResume = null
+    }
+
+    fun openInstallUnknownAppsSettingsForPendingUpdate() {
+        val pending = _pendingInstallPermissionUpdate.value ?: return
+        awaitingInstallPermissionResume = pending
+        _pendingInstallPermissionUpdate.value = null
+        updateManager.openInstallUnknownAppsSettings()
+    }
+
+    fun resumePendingUpdateIfPermitted() {
+        val pending = awaitingInstallPermissionResume ?: return
+        if (updateManager.canRequestPackageInstalls()) {
+            awaitingInstallPermissionResume = null
+            executeApkDownloadAndInstall(pending)
+        } else {
+            awaitingInstallPermissionResume = null
+            postBanner("Install unknown apps permission was not enabled. Tap Check for Updates when ready.")
+        }
+    }
+
     fun startApkUpdateDownload(info: ReleaseUpdateInfo) {
         if (!updateManager.canRequestPackageInstalls()) {
-            postBanner("Allow installing updates from Veil in Android settings, then tap Update Now again.")
-            updateManager.openInstallUnknownAppsSettings()
+            _pendingInstallPermissionUpdate.value = info
             return
         }
-        updateManager.downloadAndInstallApk(info) { status ->
-            postBanner(status)
-        }.onFailure { err ->
+        executeApkDownloadAndInstall(info)
+    }
+
+    private fun executeApkDownloadAndInstall(info: ReleaseUpdateInfo) {
+        _updateDownloadState.value = UpdateDownloadState(
+            isDownloading = true,
+            versionTag = info.versionTag,
+            statusText = "Downloading Veil ${info.versionTag}..."
+        )
+        updateManager.downloadAndInstallApk(
+            release = info,
+            onStatus = { status ->
+                if (_updateDownloadState.value.isDownloading) {
+                    _updateDownloadState.value = _updateDownloadState.value.copy(statusText = status)
+                }
+                postBanner(status)
+            },
+            onFinished = {
+                _updateDownloadState.value = UpdateDownloadState()
+            }
+        ).onFailure { err ->
+            _updateDownloadState.value = UpdateDownloadState()
             postBanner(err.message ?: "Update download failed.")
         }
     }

@@ -896,7 +896,7 @@ class VeilBackendClient {
     }
 
     companion object {
-        const val SUPABASE_SQL_SCHEMA = """-- Veil v1.0.2 Zero-Knowledge Supabase Schema
+        const val SUPABASE_SQL_SCHEMA = """-- Veil v1.0.3 Zero-Knowledge Supabase Schema
 -- Run once in Supabase SQL Editor. All messages, media, PFPs, locations & call signals
 -- are encrypted on-device with AES-256-GCM before insert. DB owners only see ciphertext.
 

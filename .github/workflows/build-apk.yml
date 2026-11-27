@@ -40,24 +40,28 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Prepare debug signing keystore
+      - name: Prepare deterministic signing keystore
         run: |
-          if [ ! -s debug.keystore ]; then
-            if [ -s debug.keystore.base64 ]; then
-              base64 -di debug.keystore.base64 > debug.keystore || rm -f debug.keystore
-            fi
+          if [ ! -s debug.keystore ] && [ -s debug.keystore.base64 ]; then
+            tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore
+          fi
+          if [ ! -s debug.keystore ] && [ -s "${HOME}/.android/debug.keystore" ]; then
+            cp "${HOME}/.android/debug.keystore" debug.keystore
           fi
           if [ ! -s debug.keystore ]; then
+            mkdir -p "${HOME}/.android"
             keytool -genkeypair -v \
-              -keystore debug.keystore \
+              -keystore "${HOME}/.android/debug.keystore" \
               -storepass android \
               -alias androiddebugkey \
               -keypass android \
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+              -dname "CN=Veil,O=Veil,C=IN"
+            cp "${HOME}/.android/debug.keystore" debug.keystore
           fi
+          keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey | head -n 5
 
       - name: Build Debug APK
         run: gradle :app:assembleDebug --no-daemon --no-configuration-cache --stacktrace

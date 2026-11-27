@@ -45,6 +45,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SwapHoriz
@@ -68,6 +69,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
@@ -180,6 +182,8 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
         handleCallActionIntent(intent)
+        // Clean up any downloaded APK files whose version <= BuildConfig.VERSION_NAME
+        viewModel.cleanupObsoleteUpdateApks()
 
         setContent {
             val accentColor by viewModel.accentColor.collectAsStateWithLifecycle()
@@ -187,6 +191,12 @@ class MainActivity : ComponentActivity() {
                 VeilAppRoot(viewModel = viewModel)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Automatically resume in-place APK update after returning from Install Unknown Apps settings
+        viewModel.resumePendingUpdateIfPermitted()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -235,6 +245,8 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
     val recordingState by viewModel.recordingState.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
     val availableUpdate by viewModel.availableUpdate.collectAsStateWithLifecycle()
+    val pendingInstallPermissionUpdate by viewModel.pendingInstallPermissionUpdate.collectAsStateWithLifecycle()
+    val updateDownloadState by viewModel.updateDownloadState.collectAsStateWithLifecycle()
     val isCheckingUpdate by viewModel.isCheckingUpdate.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
 
@@ -748,6 +760,69 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                     viewModel.startApkUpdateDownload(update)
                 }
             )
+        }
+
+        // Dark Glass "Install Unknown Apps" Permission Prompt (auto-resumes on return)
+        val pendingPermUpdate = pendingInstallPermissionUpdate
+        if (pendingPermUpdate != null) {
+            InstallUnknownAppsPermissionDialog(
+                versionTag = pendingPermUpdate.versionTag,
+                onCancel = { viewModel.dismissInstallPermissionDialog() },
+                onOpenSettings = { viewModel.openInstallUnknownAppsSettingsForPendingUpdate() }
+            )
+        }
+
+        // Active In-Place Update Download Progress Card
+        AnimatedVisibility(
+            visible = updateDownloadState.isDownloading,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(horizontal = 18.dp, vertical = 14.dp)
+        ) {
+            GlassCard(
+                cornerRadius = 16.dp,
+                containerColor = GlassSurfaceElevated,
+                borderTopColor = accent.highlight.copy(alpha = 0.5f)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.SystemUpdate,
+                            contentDescription = null,
+                            tint = accent.highlight,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = updateDownloadState.statusText.ifBlank {
+                                "Downloading Veil ${updateDownloadState.versionTag}..."
+                            },
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = SnowPrimary,
+                                fontWeight = FontWeight.Medium
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    LinearProgressIndicator(
+                        color = accent.primary,
+                        trackColor = GlassSurfaceSubtle,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                    )
+                }
+            }
         }
 
         // Floating Status Banner
@@ -1350,11 +1425,29 @@ private fun UpdateAvailableDialog(
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "A new release of Veil is ready to download directly from GitHub Releases.",
-                    style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
+                    text = "Current version: v${BuildConfig.VERSION_NAME} -> New release: ${info.versionTag}",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = JetBrainsMonoFamily,
+                        color = accent.highlight
+                    )
                 )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CheckCircle,
+                        contentDescription = null,
+                        tint = accent.highlight,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "Updates in place without losing your device-bound profile, rooms, or encrypted chats.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1372,6 +1465,7 @@ private fun UpdateAvailableDialog(
         confirmButton = {
             GlassPrimaryButton(
                 text = "Update Now",
+                icon = Icons.Rounded.SystemUpdate,
                 onClick = onUpdateNow,
                 tag = "update_dialog_confirm"
             )
@@ -1379,6 +1473,63 @@ private fun UpdateAvailableDialog(
         dismissButton = {
             TextButton(onClick = onLater, modifier = Modifier.testTag("update_dialog_later")) {
                 Text("Later", color = SlateSecondary)
+            }
+        }
+    )
+}
+
+@Composable
+private fun InstallUnknownAppsPermissionDialog(
+    versionTag: String,
+    onCancel: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    val accent = LocalVeilAccent.current
+    AlertDialog(
+        onDismissRequest = onCancel,
+        containerColor = GlassSurfaceElevated,
+        titleContentColor = SnowPrimary,
+        textContentColor = SlateSecondary,
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.Info,
+                contentDescription = null,
+                tint = accent.highlight,
+                modifier = Modifier.size(30.dp)
+            )
+        },
+        title = {
+            Text(
+                text = "Allow In-Place App Updates",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Android requires permission for Veil to install its own signed release APK ($versionTag).",
+                    style = MaterialTheme.typography.bodySmall.copy(color = SnowPrimary)
+                )
+                Text(
+                    text = "Enable \"Allow from this source\" on the next screen, then press Back. Veil will automatically resume downloading and open the Android in-place updater while preserving your bound profile, rooms, and messages.",
+                    style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
+                )
+            }
+        },
+        confirmButton = {
+            GlassPrimaryButton(
+                text = "Open Settings",
+                icon = Icons.Rounded.SystemUpdate,
+                onClick = onOpenSettings,
+                tag = "install_permission_open_settings"
+            )
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onCancel,
+                modifier = Modifier.testTag("install_permission_cancel")
+            ) {
+                Text("Cancel", color = SlateSecondary)
             }
         }
     )
