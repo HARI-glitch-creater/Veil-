@@ -51,6 +51,7 @@ import com.example.call.ActiveCallState
 import com.example.call.VoiceCallStatus
 import com.example.data.local.CallDirection
 import com.example.data.local.CallHistoryEntity
+import com.example.data.local.RoomMemberEntity
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassPill
 import com.example.ui.components.ProfileAvatar
@@ -76,10 +77,12 @@ import java.util.Locale
 @Composable
 fun CallsTabScreen(
     callHistory: List<CallHistoryEntity>,
+    members: List<RoomMemberEntity> = emptyList(),
     searchQuery: String,
     onPlaceVoiceCall: (peerPublicKey: String, peerUsername: String, peerPfpPath: String) -> Unit
 ) {
     val accent = LocalVeilAccent.current
+    val memberByKey = remember(members) { members.associateBy { it.publicKey } }
     val filtered = remember(callHistory, searchQuery) {
         if (searchQuery.isBlank()) callHistory
         else {
@@ -127,10 +130,13 @@ fun CallsTabScreen(
             contentPadding = PaddingValues(top = 8.dp, bottom = 96.dp)
         ) {
             items(filtered, key = { it.id }) { entry ->
+                val livePeer = memberByKey[entry.peerPublicKey]
+                val resolvedPfp = livePeer?.localPfpPath?.ifBlank { entry.peerPfpPath } ?: entry.peerPfpPath
+                val resolvedName = livePeer?.username?.ifBlank { entry.peerUsername } ?: entry.peerUsername
                 CallHistoryRow(
-                    entry = entry,
+                    entry = entry.copy(peerUsername = resolvedName, peerPfpPath = resolvedPfp),
                     onVoiceCallback = {
-                        onPlaceVoiceCall(entry.peerPublicKey, entry.peerUsername, entry.peerPfpPath)
+                        onPlaceVoiceCall(entry.peerPublicKey, resolvedName, resolvedPfp)
                     }
                 )
                 Box(

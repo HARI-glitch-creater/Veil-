@@ -265,8 +265,12 @@ fun BackendSettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "Veil v${BuildConfig.VERSION_NAME} Encrypted Tables SQL",
+                    text = "Veil v${BuildConfig.VERSION_NAME} One-Step Setup SQL",
                     style = MaterialTheme.typography.titleLarge.copy(color = SnowPrimary)
+                )
+                Text(
+                    text = "Run once in Supabase SQL Editor to automatically create all 8 tables, RLS policies, the public veil-media storage bucket, and Realtime publications.",
+                    style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
                 )
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -283,12 +287,12 @@ fun BackendSettingsScreen(
                     )
                 }
                 GlassPrimaryButton(
-                    text = "Copy SQL Schema",
+                    text = "Copy All-in-One SQL Script",
                     icon = Icons.Rounded.ContentCopy,
                     onClick = {
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("Veil SQL Schema", VeilBackendClient.SUPABASE_SQL_SCHEMA))
-                        viewModel.postBanner("8-table Veil SQL schema copied.")
+                        cm.setPrimaryClip(ClipData.newPlainText("Veil One-Step SQL", VeilBackendClient.SUPABASE_SQL_SCHEMA))
+                        viewModel.postBanner("One-step Veil SQL script copied.")
                         showSqlSheet = false
                     },
                     modifier = Modifier.fillMaxWidth()

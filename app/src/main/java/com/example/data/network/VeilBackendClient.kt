@@ -22,6 +22,11 @@ import org.json.JSONObject
 import java.net.URI
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 data class ResolvedBackendConfig(
@@ -175,7 +180,7 @@ class VeilBackendClient {
                         )
                         config.profile.backendType == BackendType.SUPABASE && resp.code == 404 -> ConnectionTestResult(
                             true, resp.code, elapsed,
-                            "Supabase reachable (${elapsed}ms) — run the SQL schema in Supabase to create Veil tables",
+                            "Supabase reachable (${elapsed}ms) — run the One-Step SQL script in Supabase SQL Editor to create tables, veil-media bucket, and Realtime",
                             cleartext
                         )
                         resp.code == 401 || resp.code == 403 -> ConnectionTestResult(
@@ -209,16 +214,16 @@ class VeilBackendClient {
             BackendType.SUPABASE -> "$baseUrl/rest/v1/veil_device_bindings"
             BackendType.SELF_HOSTED -> "$baseUrl/api/v1/device-bindings"
         }
-        val body = JSONObject().apply {
+        fun buildBody(useIso: Boolean): String = JSONObject().apply {
             put("device_binding_id", binding.deviceBindingId)
             put("public_key", binding.publicKey)
             put("username", binding.username)
             put("motto", binding.motto)
             put("gender", binding.gender)
             put("pfp_cipher_url", binding.pfpCipherUrl)
-            put("updated_at", binding.updatedAt)
+            put("updated_at", if (useIso) formatIsoUtc(binding.updatedAt) else binding.updatedAt)
         }.toString()
-        postJson(url, body, config, mergeDuplicates = true)
+        postJsonWithTimestampFallback(url, config, mergeDuplicates = true, buildBody = ::buildBody)
     }
 
     suspend fun fetchDeviceBinding(
@@ -244,7 +249,7 @@ class VeilBackendClient {
                     motto = obj.optString("motto"),
                     gender = obj.optString("gender", "Prefer not to say"),
                     pfpCipherUrl = obj.optString("pfp_cipher_url"),
-                    updatedAt = obj.optLong("updated_at", System.currentTimeMillis())
+                    updatedAt = parseTimestampMs(obj, "updated_at")
                 )
             }
         }
@@ -263,14 +268,15 @@ class VeilBackendClient {
             BackendType.SUPABASE -> "$baseUrl/rest/v1/veil_rooms"
             BackendType.SELF_HOSTED -> buildPathUrl(baseUrl, config.profile.roomsPath)
         }
-        val body = JSONObject().apply {
+        val now = System.currentTimeMillis()
+        fun buildBody(useIso: Boolean): String = JSONObject().apply {
             put("room_code", roomCode)
             put("room_name", roomName)
             put("host_public_key", hostPublicKey)
             put("host_device_id", hostDeviceId)
-            put("created_at", System.currentTimeMillis())
+            put("created_at", if (useIso) formatIsoUtc(now) else now)
         }.toString()
-        postJson(url, body, config, mergeDuplicates = true)
+        postJsonWithTimestampFallback(url, config, mergeDuplicates = true, buildBody = ::buildBody)
     }
 
     suspend fun fetchRoom(
@@ -293,7 +299,7 @@ class VeilBackendClient {
                     roomName = obj.optString("room_name", "Veil Room"),
                     hostPublicKey = obj.optString("host_public_key"),
                     hostDeviceId = obj.optString("host_device_id"),
-                    createdAt = obj.optLong("created_at", System.currentTimeMillis())
+                    createdAt = parseTimestampMs(obj, "created_at")
                 )
             }
         }
@@ -309,7 +315,7 @@ class VeilBackendClient {
             BackendType.SUPABASE -> "$baseUrl/rest/v1/veil_members?on_conflict=room_code,device_binding_id"
             BackendType.SELF_HOSTED -> buildPathUrl(baseUrl, config.profile.membersPath)
         }
-        val body = JSONObject().apply {
+        fun buildBody(useIso: Boolean): String = JSONObject().apply {
             put("id", member.id)
             put("room_code", member.roomCode)
             put("device_binding_id", member.deviceBindingId)
@@ -318,9 +324,9 @@ class VeilBackendClient {
             put("gender", member.gender)
             put("pfp_cipher_url", member.pfpCipherUrl)
             put("public_key", member.publicKey)
-            put("joined_at", member.joinedAt)
+            put("joined_at", if (useIso) formatIsoUtc(member.joinedAt) else member.joinedAt)
         }.toString()
-        postJson(url, body, config, mergeDuplicates = true)
+        postJsonWithTimestampFallback(url, config, mergeDuplicates = true, buildBody = ::buildBody)
     }
 
     suspend fun fetchMembers(
@@ -349,7 +355,7 @@ class VeilBackendClient {
                         gender = o.optString("gender", "Prefer not to say"),
                         pfpCipherUrl = o.optString("pfp_cipher_url"),
                         publicKey = o.optString("public_key"),
-                        joinedAt = o.optLong("joined_at", System.currentTimeMillis())
+                        joinedAt = parseTimestampMs(o, "joined_at")
                     )
                 }.filter { it.publicKey.isNotBlank() }
             }
@@ -410,16 +416,16 @@ class VeilBackendClient {
             BackendType.SUPABASE -> "$baseUrl/rest/v1/veil_communities"
             BackendType.SELF_HOSTED -> "$baseUrl/api/v1/communities"
         }
-        val body = JSONObject().apply {
+        fun buildBody(useIso: Boolean): String = JSONObject().apply {
             put("id", community.id)
             put("room_code", community.roomCode)
             put("name", community.name)
             put("description", community.description)
             put("is_default", community.isDefault)
             put("created_by_public_key", community.createdByPublicKey)
-            put("created_at", community.createdAt)
+            put("created_at", if (useIso) formatIsoUtc(community.createdAt) else community.createdAt)
         }.toString()
-        postJson(url, body, config, mergeDuplicates = true)
+        postJsonWithTimestampFallback(url, config, mergeDuplicates = true, buildBody = ::buildBody)
     }
 
     suspend fun upsertCommunityMember(
@@ -463,7 +469,7 @@ class VeilBackendClient {
                         description = o.optString("description"),
                         isDefault = o.optBoolean("is_default", false),
                         createdByPublicKey = o.optString("created_by_public_key"),
-                        createdAt = o.optLong("created_at", System.currentTimeMillis())
+                        createdAt = parseTimestampMs(o, "created_at")
                     )
                 }.filter { it.id.isNotBlank() }
             }
@@ -503,7 +509,7 @@ class VeilBackendClient {
         message: RemoteEncryptedMessage
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val baseUrl = validateHttpUrl(config.profile.baseUrl).getOrElse { return@withContext Result.failure(it) }
-        val payload = JSONObject().apply {
+        fun buildBody(useIso: Boolean): String = JSONObject().apply {
             put("id", message.id)
             put("room_code", message.roomCode)
             put("channel_type", message.channelType.name)
@@ -513,23 +519,24 @@ class VeilBackendClient {
             put("ciphertext", message.ciphertext)
             put("max_views", message.maxViews)
             put("views_consumed", message.viewsConsumed)
-            put("created_at", message.createdAt)
+            put("created_at", if (useIso) formatIsoUtc(message.createdAt) else message.createdAt)
         }.toString()
 
         val url = when (config.profile.backendType) {
             BackendType.SUPABASE -> "$baseUrl/rest/v1/veil_messages"
             BackendType.SELF_HOSTED -> buildPathUrl(baseUrl, config.profile.messagesPath)
         }
-        val res = postJson(url, payload, config, mergeDuplicates = false)
+        val res = postJsonWithTimestampFallback(url, config, mergeDuplicates = false, buildBody = ::buildBody)
 
         if (res.isSuccess &&
             config.profile.backendType == BackendType.SELF_HOSTED &&
             config.profile.webhookUrl.isNotBlank()
         ) {
+            val webhookPayload = buildBody(false)
             validateHttpUrl(config.profile.webhookUrl).onSuccess { webhookUrl ->
                 runCatching {
                     val hookReq = applyAuthHeaders(
-                        Request.Builder().url(webhookUrl).post(payload.toRequestBody(jsonMediaType)),
+                        Request.Builder().url(webhookUrl).post(webhookPayload.toRequestBody(jsonMediaType)),
                         config
                     ).build()
                     client.newCall(hookReq).execute().close()
@@ -569,7 +576,7 @@ class VeilBackendClient {
                         ciphertext = o.optString("ciphertext"),
                         maxViews = o.optInt("max_views", 0),
                         viewsConsumed = o.optInt("views_consumed", 0),
-                        createdAt = o.optLong("created_at", System.currentTimeMillis())
+                        createdAt = parseTimestampMs(o, "created_at")
                     )
                 }.filter { it.id.isNotBlank() && it.iv.isNotBlank() && it.ciphertext.isNotBlank() }
             }
@@ -609,16 +616,16 @@ class VeilBackendClient {
             BackendType.SUPABASE -> "$baseUrl/rest/v1/veil_call_signals"
             BackendType.SELF_HOSTED -> "$baseUrl/api/v1/call-signals"
         }
-        val body = JSONObject().apply {
+        fun buildBody(useIso: Boolean): String = JSONObject().apply {
             put("id", signal.id)
             put("room_code", signal.roomCode)
             put("caller_public_key", signal.callerPublicKey)
             put("callee_public_key", signal.calleePublicKey)
             put("signal_type", signal.signalType)
             put("encrypted_payload", signal.encryptedPayload)
-            put("created_at", signal.createdAt)
+            put("created_at", if (useIso) formatIsoUtc(signal.createdAt) else signal.createdAt)
         }.toString()
-        postJson(url, body, config, mergeDuplicates = false)
+        postJsonWithTimestampFallback(url, config, mergeDuplicates = false, buildBody = ::buildBody)
     }
 
     suspend fun fetchIncomingCallSignals(
@@ -630,29 +637,47 @@ class VeilBackendClient {
         val baseUrl = validateHttpUrl(config.profile.baseUrl).getOrElse { return@withContext Result.failure(it) }
         val encRoom = URLEncoder.encode(roomCode, "UTF-8")
         val encKey = URLEncoder.encode(myPublicKey, "UTF-8")
-        val url = when (config.profile.backendType) {
+        val encSinceIso = URLEncoder.encode(formatIsoUtc(sinceTimestamp), "UTF-8")
+        val primaryUrl = when (config.profile.backendType) {
             BackendType.SUPABASE ->
-                "$baseUrl/rest/v1/veil_call_signals?room_code=eq.$encRoom&callee_public_key=eq.$encKey&created_at=gt.$sinceTimestamp&order=created_at.asc"
+                "$baseUrl/rest/v1/veil_call_signals?room_code=eq.$encRoom&callee_public_key=eq.$encKey&created_at=gte.$encSinceIso&order=created_at.asc"
             BackendType.SELF_HOSTED ->
                 "$baseUrl/api/v1/call-signals?room_code=$encRoom&callee_public_key=$encKey&since=$sinceTimestamp"
         }
+
+        fun parseSignals(raw: String): List<RemoteCallSignal> {
+            val arr = extractJsonArray(raw, "signals")
+            return List(arr.length()) { i ->
+                val o = arr.getJSONObject(i)
+                RemoteCallSignal(
+                    id = o.optString("id"),
+                    roomCode = o.optString("room_code", roomCode),
+                    callerPublicKey = o.optString("caller_public_key"),
+                    calleePublicKey = o.optString("callee_public_key"),
+                    signalType = o.optString("signal_type"),
+                    encryptedPayload = o.optString("encrypted_payload"),
+                    createdAt = parseTimestampMs(o, "created_at")
+                )
+            }.filter { it.id.isNotBlank() }
+        }
+
         runCatching {
-            val req = applyAuthHeaders(Request.Builder().url(url).get(), config).build()
+            val req = applyAuthHeaders(Request.Builder().url(primaryUrl).get(), config).build()
             client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) error("HTTP ${resp.code}")
-                val arr = extractJsonArray(resp.body?.string().orEmpty().trim(), "signals")
-                List(arr.length()) { i ->
-                    val o = arr.getJSONObject(i)
-                    RemoteCallSignal(
-                        id = o.optString("id"),
-                        roomCode = o.optString("room_code", roomCode),
-                        callerPublicKey = o.optString("caller_public_key"),
-                        calleePublicKey = o.optString("callee_public_key"),
-                        signalType = o.optString("signal_type"),
-                        encryptedPayload = o.optString("encrypted_payload"),
-                        createdAt = o.optLong("created_at", System.currentTimeMillis())
-                    )
-                }.filter { it.id.isNotBlank() }
+                if (resp.isSuccessful) {
+                    return@runCatching parseSignals(resp.body?.string().orEmpty().trim())
+                }
+                // Backward-compatible fallback for older Supabase rooms with bigint created_at
+                if (config.profile.backendType == BackendType.SUPABASE && resp.code == 400) {
+                    val legacyUrl =
+                        "$baseUrl/rest/v1/veil_call_signals?room_code=eq.$encRoom&callee_public_key=eq.$encKey&created_at=gte.$sinceTimestamp&order=created_at.asc"
+                    val legacyReq = applyAuthHeaders(Request.Builder().url(legacyUrl).get(), config).build()
+                    client.newCall(legacyReq).execute().use { legacyResp ->
+                        if (!legacyResp.isSuccessful) error("HTTP ${legacyResp.code}")
+                        return@runCatching parseSignals(legacyResp.body?.string().orEmpty().trim())
+                    }
+                }
+                error("HTTP ${resp.code}")
             }
         }
     }
@@ -672,19 +697,43 @@ class VeilBackendClient {
             BackendType.SUPABASE -> "$baseUrl/rest/v1/veil_reports"
             BackendType.SELF_HOSTED -> "$baseUrl/api/v1/reports"
         }
-        val body = JSONObject().apply {
+        val now = System.currentTimeMillis()
+        fun buildBody(useIso: Boolean): String = JSONObject().apply {
             put("id", id)
             put("room_code", roomCode)
             put("reporter_public_key", reporterPublicKey)
             put("reported_public_key", reportedPublicKey)
             put("reason", reason)
             put("notes", notes)
-            put("created_at", System.currentTimeMillis())
+            put("created_at", if (useIso) formatIsoUtc(now) else now)
         }.toString()
-        postJson(url, body, config, mergeDuplicates = false)
+        postJsonWithTimestampFallback(url, config, mergeDuplicates = false, buildBody = ::buildBody)
     }
 
     // 8. Encrypted Binary Blob Storage (Media & Encrypted PFPs)
+    suspend fun uploadEncryptedPfpBlob(
+        config: ResolvedBackendConfig,
+        deviceBindingId: String,
+        encryptedBytes: ByteArray
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val baseUrl = validateHttpUrl(config.profile.baseUrl).getOrElse { return@withContext Result.failure(it) }
+        runCatching {
+            val safeDeviceId = deviceBindingId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(64).ifBlank { "device" }
+            val targetUrl = when {
+                config.profile.backendType == BackendType.SUPABASE -> {
+                    val bucket = config.profile.supabaseBucket.trim().ifBlank { "veil-media" }
+                    "$baseUrl/storage/v1/object/$bucket/pfp/$safeDeviceId.enc"
+                }
+                config.profile.mediaUploadUrl.isNotBlank() -> {
+                    val mediaBase = validateHttpUrl(config.profile.mediaUploadUrl).getOrThrow()
+                    "$mediaBase/pfp/$safeDeviceId.enc"
+                }
+                else -> error("No external media endpoint configured")
+            }
+            uploadRawBytes(config, targetUrl, encryptedBytes)
+        }
+    }
+
     suspend fun uploadEncryptedBlob(
         config: ResolvedBackendConfig,
         roomCode: String,
@@ -695,33 +744,55 @@ class VeilBackendClient {
         runCatching {
             // Hash roomCode into a URL-safe hex folder so symbols (#, &, +, ?, %) never break object paths.
             val safeFolder = safeStorageFolder(roomCode)
+            val safeBlobId = blobId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(64).ifBlank { "blob" }
             val targetUrl = when {
                 config.profile.backendType == BackendType.SUPABASE -> {
                     val bucket = config.profile.supabaseBucket.trim().ifBlank { "veil-media" }
-                    "$baseUrl/storage/v1/object/$bucket/$safeFolder/$blobId.veil"
+                    "$baseUrl/storage/v1/object/$bucket/$safeFolder/$safeBlobId.enc"
                 }
                 config.profile.mediaUploadUrl.isNotBlank() -> {
                     val mediaBase = validateHttpUrl(config.profile.mediaUploadUrl).getOrThrow()
-                    "$mediaBase/$safeFolder/$blobId.veil"
+                    "$mediaBase/$safeFolder/$safeBlobId.enc"
                 }
                 else -> error("No external media endpoint configured")
             }
+            uploadRawBytes(config, targetUrl, encryptedBytes)
+        }
+    }
 
-            val reqBuilder = applyAuthHeaders(
-                Request.Builder().url(targetUrl).apply {
-                    if (config.profile.backendType == BackendType.SUPABASE) {
-                        post(encryptedBytes.toRequestBody(octetMediaType))
-                        header("x-upsert", "true")
-                    } else {
-                        put(encryptedBytes.toRequestBody(octetMediaType))
-                    }
-                },
-                config
-            )
-            client.newCall(reqBuilder.build()).execute().use { resp ->
-                if (!resp.isSuccessful) error("Media upload HTTP ${resp.code}")
-                targetUrl
+    private fun uploadRawBytes(
+        config: ResolvedBackendConfig,
+        targetUrl: String,
+        encryptedBytes: ByteArray
+    ): String {
+        val primaryReq = applyAuthHeaders(
+            Request.Builder().url(targetUrl).apply {
+                if (config.profile.backendType == BackendType.SUPABASE) {
+                    post(encryptedBytes.toRequestBody(octetMediaType))
+                    header("x-upsert", "true")
+                } else {
+                    put(encryptedBytes.toRequestBody(octetMediaType))
+                }
+            },
+            config
+        ).build()
+
+        client.newCall(primaryReq).execute().use { resp ->
+            if (resp.isSuccessful) return targetUrl
+            if (config.profile.backendType == BackendType.SUPABASE && resp.code in listOf(400, 405, 409)) {
+                // Retry with PUT for Supabase Storage update semantics when object already exists
+                val putReq = applyAuthHeaders(
+                    Request.Builder().url(targetUrl)
+                        .put(encryptedBytes.toRequestBody(octetMediaType))
+                        .header("x-upsert", "true"),
+                    config
+                ).build()
+                client.newCall(putReq).execute().use { putResp ->
+                    if (putResp.isSuccessful) return targetUrl
+                    error("Media upload HTTP ${putResp.code}")
+                }
             }
+            error("Media upload HTTP ${resp.code}")
         }
     }
 
@@ -729,12 +800,32 @@ class VeilBackendClient {
         config: ResolvedBackendConfig,
         blobUrl: String
     ): Result<ByteArray> = withContext(Dispatchers.IO) {
-        val validUrl = validateHttpUrl(blobUrl).getOrElse { return@withContext Result.failure(it) }
+        // Strip any client-side decryption fragment (#k=...&iv=...) before sending HTTP GET
+        val cleanUrl = blobUrl.substringBefore('#').trim()
+        val validUrl = validateHttpUrl(cleanUrl).getOrElse { return@withContext Result.failure(it) }
         runCatching {
-            val req = applyAuthHeaders(Request.Builder().url(validUrl).get(), config).build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) error("Media download HTTP ${resp.code}")
-                resp.body?.bytes() ?: error("Empty blob")
+            val primaryReq = applyAuthHeaders(Request.Builder().url(validUrl).get(), config).build()
+            client.newCall(primaryReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    return@runCatching resp.body?.bytes() ?: error("Empty blob")
+                }
+                // Fallback between Supabase authenticated /storage/v1/object/ and /storage/v1/object/public/
+                val alternateUrl = when {
+                    validUrl.contains("/storage/v1/object/public/") ->
+                        validUrl.replaceFirst("/storage/v1/object/public/", "/storage/v1/object/")
+                    validUrl.contains("/storage/v1/object/") ->
+                        validUrl.replaceFirst("/storage/v1/object/", "/storage/v1/object/public/")
+                    else -> null
+                }
+                if (alternateUrl != null) {
+                    val fallbackReq = applyAuthHeaders(Request.Builder().url(alternateUrl).get(), config).build()
+                    client.newCall(fallbackReq).execute().use { fbResp ->
+                        if (fbResp.isSuccessful) {
+                            return@runCatching fbResp.body?.bytes() ?: error("Empty blob")
+                        }
+                    }
+                }
+                error("Media download HTTP ${resp.code}")
             }
         }
     }
@@ -803,6 +894,23 @@ class VeilBackendClient {
         awaitClose { ws.close(1000, "Closed") }
     }
 
+    private fun postJsonWithTimestampFallback(
+        url: String,
+        config: ResolvedBackendConfig,
+        mergeDuplicates: Boolean,
+        buildBody: (useIsoTimestamps: Boolean) -> String
+    ): Result<Unit> {
+        val preferIso = config.profile.backendType == BackendType.SUPABASE
+        val firstRes = postJson(url, buildBody(preferIso), config, mergeDuplicates)
+        if (firstRes.isSuccess || !preferIso) return firstRes
+        val errMsg = firstRes.exceptionOrNull()?.message.orEmpty()
+        if (errMsg.contains("HTTP 400")) {
+            // Backward-compatible retry for pre-v1.0.5 Supabase tables using bigint timestamps
+            return postJson(url, buildBody(false), config, mergeDuplicates)
+        }
+        return firstRes
+    }
+
     private fun postJson(
         url: String,
         body: String,
@@ -824,6 +932,50 @@ class VeilBackendClient {
                 error("Request failed (HTTP ${resp.code})")
             }
         }
+    }
+
+    private fun formatIsoUtc(epochMs: Long): String {
+        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+        sdf.timeZone = TimeZone.getTimeZone("UTC")
+        return sdf.format(Date(epochMs))
+    }
+
+    private fun parseTimestampMs(
+        obj: JSONObject,
+        key: String,
+        fallback: Long = System.currentTimeMillis()
+    ): Long {
+        if (!obj.has(key) || obj.isNull(key)) return fallback
+        val raw = obj.opt(key) ?: return fallback
+        if (raw is Number) return raw.toLong()
+        val str = raw.toString().trim()
+        if (str.isEmpty()) return fallback
+        str.toLongOrNull()?.let { return it }
+        val match = ISO_TIMESTAMP_REGEX.matchEntire(str) ?: return fallback
+        val year = match.groupValues[1].toIntOrNull() ?: return fallback
+        val month = match.groupValues[2].toIntOrNull() ?: return fallback
+        val day = match.groupValues[3].toIntOrNull() ?: return fallback
+        val hour = match.groupValues[4].toIntOrNull() ?: return fallback
+        val minute = match.groupValues[5].toIntOrNull() ?: return fallback
+        val second = match.groupValues[6].toIntOrNull() ?: return fallback
+        val frac = match.groupValues[7]
+        val millis = if (frac.isEmpty()) 0 else frac.padEnd(3, '0').take(3).toIntOrNull() ?: 0
+        val tz = match.groupValues[8]
+
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+        cal.clear()
+        cal.set(year, month - 1, day, hour, minute, second)
+        cal.set(Calendar.MILLISECOND, millis)
+        var epoch = cal.timeInMillis
+        if (tz.isNotEmpty() && tz != "Z" && tz != "z") {
+            val sign = if (tz.startsWith("-")) -1 else 1
+            val digits = tz.substring(1).replace(":", "")
+            val tzHours = digits.take(2).toIntOrNull() ?: 0
+            val tzMins = if (digits.length >= 4) digits.substring(2, 4).toIntOrNull() ?: 0 else 0
+            val offsetMs = sign * ((tzHours * 60L) + tzMins) * 60_000L
+            epoch -= offsetMs
+        }
+        return epoch
     }
 
     private fun applyAuthHeaders(
@@ -896,91 +1048,92 @@ class VeilBackendClient {
     }
 
     companion object {
-        const val SUPABASE_SQL_SCHEMA = """-- Veil v1.0.3 Zero-Knowledge Supabase Schema
--- Run once in Supabase SQL Editor. All messages, media, PFPs, locations & call signals
--- are encrypted on-device with AES-256-GCM before insert. DB owners only see ciphertext.
+        private val ISO_TIMESTAMP_REGEX =
+            Regex("^(\\d{4})-(\\d{2})-(\\d{2})[T ](\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d+))?(Z|z|[+-]\\d{2}:?\\d{2})?$")
 
+        const val SUPABASE_SQL_SCHEMA = """-- 1. Core Tables
 create table if not exists public.veil_device_bindings (
   device_binding_id text primary key,
   public_key text not null,
   username text not null,
-  motto text not null default '',
-  gender text not null default 'Prefer not to say',
-  pfp_cipher_url text not null default '',
-  updated_at bigint not null
+  motto text not null,
+  gender text not null,
+  pfp_cipher_url text,
+  updated_at timestamptz default now()
 );
 
 create table if not exists public.veil_rooms (
   room_code text primary key,
   room_name text not null,
   host_public_key text not null,
-  host_device_id text not null default '',
-  created_at bigint not null
+  host_device_id text not null,
+  created_at timestamptz default now()
 );
 
 create table if not exists public.veil_members (
-  id text primary key,
-  room_code text not null references public.veil_rooms(room_code) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
+  room_code text references public.veil_rooms(room_code) on delete cascade,
   device_binding_id text not null,
   username text not null,
-  motto text not null default '',
-  gender text not null default 'Prefer not to say',
-  pfp_cipher_url text not null default '',
+  motto text not null,
+  gender text not null,
+  pfp_cipher_url text,
   public_key text not null,
-  joined_at bigint not null,
-  unique (room_code, device_binding_id)
+  joined_at timestamptz default now(),
+  unique(room_code, device_binding_id)
 );
 
 create table if not exists public.veil_communities (
-  id text primary key,
-  room_code text not null references public.veil_rooms(room_code) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
+  room_code text references public.veil_rooms(room_code) on delete cascade,
   name text not null,
-  description text not null default '',
+  description text not null,
   is_default boolean not null default false,
   created_by_public_key text not null,
-  created_at bigint not null
+  created_at timestamptz default now()
 );
 
 create table if not exists public.veil_community_members (
-  community_id text not null references public.veil_communities(id) on delete cascade,
+  community_id uuid references public.veil_communities(id) on delete cascade,
   member_public_key text not null,
   encrypted_community_key text not null,
   primary key (community_id, member_public_key)
 );
 
 create table if not exists public.veil_messages (
-  id text primary key,
-  room_code text not null references public.veil_rooms(room_code) on delete cascade,
-  channel_type text not null check (channel_type in ('DIRECT', 'COMMUNITY')),
+  id uuid primary key default gen_random_uuid(),
+  room_code text references public.veil_rooms(room_code) on delete cascade,
+  channel_type text not null,
   target_id text not null,
   sender_public_key text not null,
   iv text not null,
   ciphertext text not null,
   max_views integer not null default 0,
   views_consumed integer not null default 0,
-  created_at bigint not null
+  created_at timestamptz default now()
 );
 
 create table if not exists public.veil_call_signals (
-  id text primary key,
-  room_code text not null references public.veil_rooms(room_code) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
+  room_code text references public.veil_rooms(room_code) on delete cascade,
   caller_public_key text not null,
   callee_public_key text not null,
   signal_type text not null,
   encrypted_payload text not null,
-  created_at bigint not null
+  created_at timestamptz default now()
 );
 
 create table if not exists public.veil_reports (
-  id text primary key,
+  id uuid primary key default gen_random_uuid(),
   room_code text not null,
   reporter_public_key text not null,
   reported_public_key text not null,
   reason text not null,
   notes text not null default '',
-  created_at bigint not null
+  created_at timestamptz default now()
 );
 
+-- 2. Enable Row Level Security
 alter table public.veil_device_bindings enable row level security;
 alter table public.veil_rooms enable row level security;
 alter table public.veil_members enable row level security;
@@ -990,13 +1143,61 @@ alter table public.veil_messages enable row level security;
 alter table public.veil_call_signals enable row level security;
 alter table public.veil_reports enable row level security;
 
+-- 3. Open RLS Policies (Safe to Re-Run)
+drop policy if exists "veil_device_bindings_all" on public.veil_device_bindings;
 create policy "veil_device_bindings_all" on public.veil_device_bindings for all using (true) with check (true);
+
+drop policy if exists "veil_rooms_all" on public.veil_rooms;
 create policy "veil_rooms_all" on public.veil_rooms for all using (true) with check (true);
+
+drop policy if exists "veil_members_all" on public.veil_members;
 create policy "veil_members_all" on public.veil_members for all using (true) with check (true);
+
+drop policy if exists "veil_communities_all" on public.veil_communities;
 create policy "veil_communities_all" on public.veil_communities for all using (true) with check (true);
+
+drop policy if exists "veil_community_members_all" on public.veil_community_members;
 create policy "veil_community_members_all" on public.veil_community_members for all using (true) with check (true);
+
+drop policy if exists "veil_messages_all" on public.veil_messages;
 create policy "veil_messages_all" on public.veil_messages for all using (true) with check (true);
+
+drop policy if exists "veil_call_signals_all" on public.veil_call_signals;
 create policy "veil_call_signals_all" on public.veil_call_signals for all using (true) with check (true);
-create policy "veil_reports_all" on public.veil_reports for all using (true) with check (true);"""
+
+drop policy if exists "veil_reports_all" on public.veil_reports;
+create policy "veil_reports_all" on public.veil_reports for all using (true) with check (true);
+
+-- 4. Create Public 'veil-media' Storage Bucket + Object Policies
+insert into storage.buckets (id, name, public)
+values ('veil-media', 'veil-media', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists "veil_media_public_all" on storage.objects;
+create policy "veil_media_public_all" on storage.objects
+for all using (bucket_id = 'veil-media') with check (bucket_id = 'veil-media');
+
+-- 5. Enable Realtime Publications Safely
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'veil_messages'
+  ) then
+    alter publication supabase_realtime add table public.veil_messages;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'veil_members'
+  ) then
+    alter publication supabase_realtime add table public.veil_members;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'veil_call_signals'
+  ) then
+    alter publication supabase_realtime add table public.veil_call_signals;
+  end if;
+end $$;"""
     }
 }

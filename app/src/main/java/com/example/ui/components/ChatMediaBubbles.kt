@@ -29,11 +29,13 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,12 +46,14 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.data.local.MessageContentType
 import com.example.data.local.MessageEntity
 import com.example.data.local.SyncStatus
@@ -74,10 +78,12 @@ fun MessageBubbleCard(
     message: MessageEntity,
     showSenderName: Boolean,
     playbackState: VoicePlaybackState,
+    isDownloading: Boolean = false,
+    onAutoLoadMedia: (MessageEntity) -> Unit = {},
     onOpenEphemeral: (MessageEntity) -> Unit,
     onOpenMedia: (MessageEntity) -> Unit,
     onOpenLocation: (Double, Double, String) -> Unit,
-    onToggleVoicePlay: (String, String) -> Unit,
+    onToggleVoicePlay: (MessageEntity) -> Unit,
     onSeekVoice: (String, Float) -> Unit
 ) {
     val accent = LocalVeilAccent.current
@@ -134,12 +140,28 @@ fun MessageBubbleCard(
                     }
 
                     MessageContentType.IMAGE -> {
-                        val file = remember(message.localMediaPath) {
-                            message.localMediaPath.takeIf { it.isNotBlank() }?.let { File(it) }?.takeIf { it.exists() }
+                        val context = LocalContext.current
+                        val file = message.localMediaPath
+                            .takeIf { it.isNotBlank() }
+                            ?.let { File(it) }
+                            ?.takeIf { it.exists() && it.length() > 0L }
+                        if (file == null && (message.remoteMediaUrl.isNotBlank() || message.ciphertextPayload.isNotBlank())) {
+                            LaunchedEffect(message.id, message.remoteMediaUrl) {
+                                onAutoLoadMedia(message)
+                            }
                         }
                         if (file != null) {
+                            val stamp = file.lastModified()
+                            val request = remember(file.absolutePath, stamp) {
+                                ImageRequest.Builder(context)
+                                    .data(file)
+                                    .memoryCacheKey("${file.absolutePath}:$stamp")
+                                    .diskCacheKey("${file.absolutePath}:$stamp")
+                                    .crossfade(true)
+                                    .build()
+                            }
                             AsyncImage(
-                                model = file,
+                                model = request,
                                 contentDescription = message.fileName.ifBlank { "Encrypted photo" },
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
@@ -152,26 +174,45 @@ fun MessageBubbleCard(
                             MediaFallbackTile(
                                 icon = Icons.Rounded.Description,
                                 title = message.fileName.ifBlank { "Encrypted Photo" },
-                                subtitle = formatBytes(message.fileSizeBytes),
+                                subtitle = if (isDownloading) {
+                                    "Downloading & decrypting..."
+                                } else {
+                                    "Tap to download · ${formatBytes(message.fileSizeBytes)}"
+                                },
+                                isLoading = isDownloading,
                                 onClick = { onOpenMedia(message) }
                             )
                         }
                     }
 
                     MessageContentType.VIDEO -> {
+                        val isCached = message.localMediaPath.isNotBlank() &&
+                            File(message.localMediaPath).let { it.exists() && it.length() > 0L }
                         MediaFallbackTile(
                             icon = Icons.Rounded.Videocam,
                             title = message.fileName.ifBlank { "Encrypted Video" },
-                            subtitle = "Tap to play · ${formatBytes(message.fileSizeBytes)}",
+                            subtitle = when {
+                                isDownloading -> "Downloading & decrypting..."
+                                isCached -> "Tap to play · ${formatBytes(message.fileSizeBytes)}"
+                                else -> "Tap to download & play · ${formatBytes(message.fileSizeBytes)}"
+                            },
+                            isLoading = isDownloading,
                             onClick = { onOpenMedia(message) }
                         )
                     }
 
                     MessageContentType.DOCUMENT -> {
+                        val isCached = message.localMediaPath.isNotBlank() &&
+                            File(message.localMediaPath).let { it.exists() && it.length() > 0L }
                         MediaFallbackTile(
                             icon = Icons.Rounded.Description,
                             title = message.fileName.ifBlank { "Encrypted File" },
-                            subtitle = "${message.mimeType.ifBlank { "Document" }} · ${formatBytes(message.fileSizeBytes)}",
+                            subtitle = when {
+                                isDownloading -> "Downloading & decrypting..."
+                                isCached -> "${message.mimeType.ifBlank { "Document" }} · ${formatBytes(message.fileSizeBytes)}"
+                                else -> "Tap to download · ${formatBytes(message.fileSizeBytes)}"
+                            },
+                            isLoading = isDownloading,
                             onClick = { onOpenMedia(message) }
                         )
                     }
@@ -226,11 +267,8 @@ fun MessageBubbleCard(
                         VoiceNoteBubbleBody(
                             message = message,
                             playbackState = playbackState,
-                            onTogglePlay = {
-                                if (message.localMediaPath.isNotBlank()) {
-                                    onToggleVoicePlay(message.id, message.localMediaPath)
-                                }
-                            },
+                            isDownloading = isDownloading,
+                            onTogglePlay = { onToggleVoicePlay(message) },
                             onSeek = { frac -> onSeekVoice(message.id, frac) }
                         )
                     }
@@ -361,6 +399,7 @@ private fun MediaFallbackTile(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     subtitle: String,
+    isLoading: Boolean = false,
     onClick: () -> Unit
 ) {
     val accent = LocalVeilAccent.current
@@ -369,7 +408,7 @@ private fun MediaFallbackTile(
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(GlassSurfaceSubtle)
-            .clickable(onClick = onClick)
+            .clickable(enabled = !isLoading, onClick = onClick)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -381,12 +420,20 @@ private fun MediaFallbackTile(
                 .background(accent.container),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = accent.highlight,
-                modifier = Modifier.size(20.dp)
-            )
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = accent.highlight
+                )
+            } else {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accent.highlight,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -409,6 +456,7 @@ private fun MediaFallbackTile(
 private fun VoiceNoteBubbleBody(
     message: MessageEntity,
     playbackState: VoicePlaybackState,
+    isDownloading: Boolean = false,
     onTogglePlay: () -> Unit,
     onSeek: (Float) -> Unit
 ) {
@@ -428,17 +476,26 @@ private fun VoiceNoteBubbleBody(
     ) {
         IconButton(
             onClick = onTogglePlay,
+            enabled = !isDownloading,
             modifier = Modifier
                 .size(38.dp)
                 .clip(CircleShape)
                 .background(accent.primary)
         ) {
-            Icon(
-                imageVector = if (isThisPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                contentDescription = if (isThisPlaying) "Pause voice note" else "Play voice note",
-                tint = ObsidianDeep,
-                modifier = Modifier.size(20.dp)
-            )
+            if (isDownloading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = ObsidianDeep
+                )
+            } else {
+                Icon(
+                    imageVector = if (isThisPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    contentDescription = if (isThisPlaying) "Pause voice note" else "Play voice note",
+                    tint = ObsidianDeep,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
 
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -471,7 +528,7 @@ private fun VoiceNoteBubbleBody(
                 }
             }
             Text(
-                text = formatAudioDuration(message.audioDurationMs),
+                text = if (isDownloading) "Decrypting voice note..." else formatAudioDuration(message.audioDurationMs),
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontFamily = JetBrainsMonoFamily,
                     color = SlateSecondary

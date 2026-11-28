@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 class VeilTypeConverters {
     @TypeConverter
@@ -69,7 +71,7 @@ class VeilTypeConverters {
         MessageEntity::class,
         CallHistoryEntity::class
     ],
-    version = 3,
+    version = 5,
     exportSchema = false
 )
 @TypeConverters(VeilTypeConverters::class)
@@ -80,6 +82,19 @@ abstract class VeilDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: VeilDatabase? = null
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN mediaKey TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE messages ADD COLUMN mediaIv TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE call_history ADD COLUMN roomCode TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): VeilDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -87,6 +102,7 @@ abstract class VeilDatabase : RoomDatabase() {
                     VeilDatabase::class.java,
                     "veil_local_vault.db"
                 )
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration(true)
                     .build()
                     .also { INSTANCE = it }

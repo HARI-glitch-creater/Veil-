@@ -196,6 +196,15 @@ class VeilRepository(context: Context) {
                 val remoteBinding = backendClient.fetchDeviceBinding(activeBackend, deviceId).getOrNull()
                 if (remoteBinding != null && remoteBinding.username.isNotBlank()) {
                     val id = crypto.updateHandle(remoteBinding.username)
+                    var resolvedPfpPath = localPfpPath
+                    if (resolvedPfpPath.isBlank() && remoteBinding.pfpCipherUrl.isNotBlank()) {
+                        resolvedPfpPath = downloadAndDecryptPfp(
+                            config = activeBackend,
+                            cacheKey = deviceId,
+                            pfpCipherUrl = remoteBinding.pfpCipherUrl,
+                            legacyRoomKey = null
+                        ).orEmpty()
+                    }
                     val restored = UserProfileEntity(
                         id = "local_user",
                         deviceBindingId = deviceId,
@@ -203,7 +212,7 @@ class VeilRepository(context: Context) {
                         username = remoteBinding.username,
                         motto = VeilCryptoEngine.enforceMaxWords(remoteBinding.motto, 20),
                         gender = remoteBinding.gender,
-                        localPfpPath = localPfpPath,
+                        localPfpPath = resolvedPfpPath,
                         remotePfpCipherUrl = remoteBinding.pfpCipherUrl,
                         isBound = true,
                         updatedAt = System.currentTimeMillis()
@@ -221,6 +230,10 @@ class VeilRepository(context: Context) {
             }
 
             val identity = crypto.updateHandle(cleanUser)
+            val uploadedPfpUrl = if (activeBackend != null) {
+                uploadEncryptedPfpIfPresent(activeBackend, deviceId, localPfpPath)
+            } else ""
+
             val entity = UserProfileEntity(
                 id = "local_user",
                 deviceBindingId = deviceId,
@@ -229,6 +242,7 @@ class VeilRepository(context: Context) {
                 motto = cleanMotto,
                 gender = cleanGender,
                 localPfpPath = localPfpPath,
+                remotePfpCipherUrl = uploadedPfpUrl,
                 isBound = true,
                 updatedAt = System.currentTimeMillis()
             )
@@ -250,7 +264,7 @@ class VeilRepository(context: Context) {
                         username = entity.username,
                         motto = entity.motto,
                         gender = entity.gender,
-                        pfpCipherUrl = entity.remotePfpCipherUrl,
+                        pfpCipherUrl = uploadedPfpUrl,
                         updatedAt = entity.updatedAt
                     )
                 )
@@ -301,11 +315,18 @@ class VeilRepository(context: Context) {
             )
 
             val rooms = dao.getAllRooms()
+            var latestCipherPfpUrl = updated.remotePfpCipherUrl
+            val uploadedUrlByBackendId = mutableMapOf<String, String>()
+
             for (room in rooms) {
                 val config = resolveBackendConfigForRoom(room) ?: continue
-                val roomKey = deriveRoomKey(room)
-                val cipherPfpUrl = uploadEncryptedPfpIfPresent(config, room.veilCode, roomKey, localPfpPath)
-                    .ifBlank { updated.remotePfpCipherUrl }
+                val cipherPfpUrl = uploadedUrlByBackendId.getOrPut(config.profile.id) {
+                    uploadEncryptedPfpIfPresent(config, deviceId, localPfpPath)
+                        .ifBlank { latestCipherPfpUrl }
+                }
+                if (cipherPfpUrl.isNotBlank()) {
+                    latestCipherPfpUrl = cipherPfpUrl
+                }
 
                 backendClient.upsertDeviceBinding(
                     config,
@@ -322,7 +343,7 @@ class VeilRepository(context: Context) {
                 backendClient.upsertMember(
                     config,
                     RemoteMemberRecord(
-                        id = "${room.veilCode}_${deviceId.take(16)}",
+                        id = deterministicUuid("member:${room.veilCode}:$deviceId"),
                         roomCode = room.veilCode,
                         deviceBindingId = deviceId,
                         username = updated.username,
@@ -334,7 +355,36 @@ class VeilRepository(context: Context) {
                     )
                 )
             }
-            updated
+
+            if (rooms.isEmpty()) {
+                val activeBackend = dao.getActiveBackendProfile()?.let { resolveBackendConfig(it) }
+                if (activeBackend != null) {
+                    val cipherPfpUrl = uploadEncryptedPfpIfPresent(activeBackend, deviceId, localPfpPath)
+                        .ifBlank { latestCipherPfpUrl }
+                    if (cipherPfpUrl.isNotBlank()) {
+                        latestCipherPfpUrl = cipherPfpUrl
+                    }
+                    backendClient.upsertDeviceBinding(
+                        activeBackend,
+                        RemoteDeviceBinding(
+                            deviceBindingId = deviceId,
+                            publicKey = updated.publicKey,
+                            username = updated.username,
+                            motto = updated.motto,
+                            gender = updated.gender,
+                            pfpCipherUrl = cipherPfpUrl,
+                            updatedAt = updated.updatedAt
+                        )
+                    )
+                }
+            }
+
+            if (latestCipherPfpUrl.isNotBlank() && latestCipherPfpUrl != updated.remotePfpCipherUrl) {
+                dao.updateUserRemotePfpUrl(latestCipherPfpUrl)
+                updated.copy(remotePfpCipherUrl = latestCipherPfpUrl)
+            } else {
+                updated
+            }
         }
     }
 
@@ -451,12 +501,14 @@ class VeilRepository(context: Context) {
             val config = resolveBackendConfig(backend)
             val profile = ensureLocalProfile()
             val veilCode = crypto.generateVeilCode()
-            val roomKeyB64 = crypto.generateRandomRoomKeyBase64()
             val roomId = UUID.randomUUID().toString()
-            val roomKeyBytes = crypto.deriveSymmetricRoomKey(roomKeyB64, veilCode)
 
             val warnings = mutableListOf<String>()
-            val cipherPfpUrl = uploadEncryptedPfpIfPresent(config, veilCode, roomKeyBytes, profile.localPfpPath)
+            val cipherPfpUrl = uploadEncryptedPfpIfPresent(config, profile.deviceBindingId, profile.localPfpPath)
+                .ifBlank { profile.remotePfpCipherUrl }
+            if (cipherPfpUrl.isNotBlank() && cipherPfpUrl != profile.remotePfpCipherUrl) {
+                dao.updateUserRemotePfpUrl(cipherPfpUrl)
+            }
 
             backendClient.upsertDeviceBinding(
                 config,
@@ -485,7 +537,7 @@ class VeilRepository(context: Context) {
             backendClient.upsertMember(
                 config,
                 RemoteMemberRecord(
-                    id = "${veilCode}_${profile.deviceBindingId.take(16)}",
+                    id = deterministicUuid("member:$veilCode:${profile.deviceBindingId}"),
                     roomCode = veilCode,
                     deviceBindingId = profile.deviceBindingId,
                     username = profile.username,
@@ -508,7 +560,7 @@ class VeilRepository(context: Context) {
                 hostDeviceId = profile.deviceBindingId,
                 peerHandle = "",
                 peerPublicKey = "",
-                encryptedRoomKey = crypto.protectString(roomKeyB64),
+                encryptedRoomKey = "",
                 safetyNumber = "",
                 isVerified = false,
                 lastMessagePreview = "Room ready. Share the 16-character Veil Code to invite profiles."
@@ -596,8 +648,11 @@ class VeilRepository(context: Context) {
             dao.upsertRoom(room)
             dao.setActiveRoom(room.id)
 
-            val roomKeyBytes = deriveRoomKey(room)
-            val cipherPfpUrl = uploadEncryptedPfpIfPresent(config, cleanCode, roomKeyBytes, profile.localPfpPath)
+            val cipherPfpUrl = uploadEncryptedPfpIfPresent(config, profile.deviceBindingId, profile.localPfpPath)
+                .ifBlank { profile.remotePfpCipherUrl }
+            if (cipherPfpUrl.isNotBlank() && cipherPfpUrl != profile.remotePfpCipherUrl) {
+                dao.updateUserRemotePfpUrl(cipherPfpUrl)
+            }
 
             backendClient.upsertDeviceBinding(
                 config,
@@ -614,7 +669,7 @@ class VeilRepository(context: Context) {
             backendClient.upsertMember(
                 config,
                 RemoteMemberRecord(
-                    id = "${cleanCode}_${profile.deviceBindingId.take(16)}",
+                    id = deterministicUuid("member:$cleanCode:${profile.deviceBindingId}"),
                     roomCode = cleanCode,
                     deviceBindingId = profile.deviceBindingId,
                     username = profile.username,
@@ -757,7 +812,7 @@ class VeilRepository(context: Context) {
             val config = resolveBackendConfigForRoom(room)
             val me = ensureLocalProfile()
 
-            val communityId = "comm_${UUID.randomUUID()}"
+            val communityId = UUID.randomUUID().toString()
             val communityKeyB64 = crypto.generateRandomKeyBase64()
             val now = System.currentTimeMillis()
 
@@ -842,13 +897,17 @@ class VeilRepository(context: Context) {
         }
     }
 
+    private fun deterministicUuid(seed: String): String =
+        UUID.nameUUIDFromBytes(seed.toByteArray(Charsets.UTF_8)).toString()
+
     private suspend fun ensureDefaultRoomCommunity(
         room: VeilRoomEntity,
         config: ResolvedBackendConfig?,
         me: UserProfileEntity
     ) {
-        val defaultId = "default_${room.veilCode}"
-        val existing = dao.getCommunityById(defaultId)
+        val existingDefault = dao.getCommunitiesForRoom(room.id).firstOrNull { it.isDefault }
+        val defaultId = existingDefault?.id ?: deterministicUuid("default-community:${room.veilCode}")
+        val existing = existingDefault ?: dao.getCommunityById(defaultId)
         val defaultKeyB64 = existing?.encryptedCommunityKey?.let { crypto.unprotectString(it) }
             ?.ifBlank { null }
             ?: Base64.encodeToString(deriveRoomKey(room), Base64.NO_WRAP)
@@ -1050,23 +1109,26 @@ class VeilRepository(context: Context) {
         maxViews: Int = 0
     ): Result<MessageEntity> {
         val room = dao.getRoomById(roomId) ?: return Result.failure(IllegalStateException("Room not found"))
-        val channelKey = deriveChannelKey(room, channelType, targetId)
+        val messageId = UUID.randomUUID().toString()
         val rawBytes = file.readBytes()
-        val encryptedPacket = crypto.encryptBlobPacket(channelKey, rawBytes)
+
+        // Generate a dedicated per-attachment AES-256-GCM key & 96-bit IV embedded inside the E2EE JSON envelope
+        val (mediaKeyB64, mediaIvB64) = crypto.generateMediaKeyAndIv()
+        val encryptedBytes = crypto.encryptBytesWithKeyAndIv(mediaKeyB64, mediaIvB64, rawBytes)
 
         val config = resolveBackendConfigForRoom(room)
         var remoteUrl = ""
         var inlineBase64 = ""
 
         if (config != null) {
-            val uploadRes = backendClient.uploadEncryptedBlob(config, room.veilCode, UUID.randomUUID().toString(), encryptedPacket)
+            val uploadRes = backendClient.uploadEncryptedBlob(config, room.veilCode, messageId, encryptedBytes)
             if (uploadRes.isSuccess) {
                 remoteUrl = uploadRes.getOrThrow()
-            } else if (encryptedPacket.size <= MAX_INLINE_CIPHER_BYTES) {
-                inlineBase64 = Base64.encodeToString(encryptedPacket, Base64.NO_WRAP)
+            } else if (encryptedBytes.size <= MAX_INLINE_CIPHER_BYTES) {
+                inlineBase64 = Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
             }
-        } else if (encryptedPacket.size <= MAX_INLINE_CIPHER_BYTES) {
-            inlineBase64 = Base64.encodeToString(encryptedPacket, Base64.NO_WRAP)
+        } else if (encryptedBytes.size <= MAX_INLINE_CIPHER_BYTES) {
+            inlineBase64 = Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
         }
 
         val envelopeJson = JSONObject().apply {
@@ -1077,7 +1139,12 @@ class VeilRepository(context: Context) {
             put("audioDurationMs", audioDurationMs)
             put("waveformPeaks", waveformPeaks)
             put("max_views", maxViews)
-            if (remoteUrl.isNotBlank()) put("mediaUrl", remoteUrl)
+            put("mediaKey", mediaKeyB64)
+            put("mediaIv", mediaIvB64)
+            if (remoteUrl.isNotBlank()) {
+                put("storageUrl", remoteUrl)
+                put("mediaUrl", remoteUrl)
+            }
             if (inlineBase64.isNotBlank()) put("inlineBlob", inlineBase64)
         }
 
@@ -1102,12 +1169,15 @@ class VeilRepository(context: Context) {
             previewText = preview,
             localMediaPath = file.absolutePath,
             remoteMediaUrl = remoteUrl,
+            mediaKey = mediaKeyB64,
+            mediaIv = mediaIvB64,
             fileName = displayName,
             mimeType = mimeType,
             fileSizeBytes = sizeBytes,
             audioDurationMs = audioDurationMs,
             waveformPeaks = waveformPeaks,
-            maxViews = maxViews
+            maxViews = maxViews,
+            messageIdOverride = messageId
         )
     }
 
@@ -1121,6 +1191,8 @@ class VeilRepository(context: Context) {
         decryptedText: String = "",
         localMediaPath: String = "",
         remoteMediaUrl: String = "",
+        mediaKey: String = "",
+        mediaIv: String = "",
         fileName: String = "",
         mimeType: String = "",
         fileSizeBytes: Long = 0L,
@@ -1129,13 +1201,14 @@ class VeilRepository(context: Context) {
         latitude: Double? = null,
         longitude: Double? = null,
         locationLabel: String = "",
-        maxViews: Int = 0
+        maxViews: Int = 0,
+        messageIdOverride: String? = null
     ): Result<MessageEntity> = runCatching {
         val room = dao.getRoomById(roomId) ?: error("Room not found")
         val me = ensureLocalProfile()
         val keyBytes = deriveChannelKey(room, channelType, targetId)
         val encrypted = crypto.encryptText(keyBytes, envelopeJson.toString())
-        val messageId = UUID.randomUUID().toString()
+        val messageId = messageIdOverride ?: UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
 
         val entity = MessageEntity(
@@ -1152,6 +1225,8 @@ class VeilRepository(context: Context) {
             decryptedText = decryptedText,
             localMediaPath = localMediaPath,
             remoteMediaUrl = remoteMediaUrl,
+            mediaKey = mediaKey,
+            mediaIv = mediaIv,
             fileName = fileName,
             mimeType = mimeType,
             fileSizeBytes = fileSizeBytes,
@@ -1199,6 +1274,90 @@ class VeilRepository(context: Context) {
     }
 
     /**
+     * On-demand encrypted media downloader & decryptor for IMAGE, DOCUMENT, VOICE, and VIDEO messages.
+     * Downloads ciphertext from Supabase Storage (veil-media), decrypts with the message's mediaKey & mediaIv
+     * (or legacy channel key fallback) into context.cacheDir/veil_media/<messageId>.<ext>, and updates Room.
+     */
+    suspend fun ensureMediaDownloaded(messageId: String): Result<MessageEntity> = withContext(Dispatchers.IO) {
+        runCatching {
+            val msg = dao.getMessageById(messageId) ?: error("Message not found.")
+            if (msg.isDisappeared || (msg.maxViews > 0 && msg.viewsConsumed >= msg.maxViews)) {
+                error("This disappearing media has already expired.")
+            }
+
+            val existingLocal = msg.localMediaPath.takeIf { it.isNotBlank() }?.let { File(it) }
+            if (existingLocal != null && existingLocal.exists() && existingLocal.length() > 0L) {
+                return@runCatching msg
+            }
+
+            val room = dao.getRoomById(msg.roomId) ?: error("Room not found.")
+            val config = resolveBackendConfigForRoom(room)
+            val channelKey = deriveChannelKey(room, msg.channelType, msg.targetId)
+
+            var effectiveUrl = msg.remoteMediaUrl
+            var effectiveKey = msg.mediaKey
+            var effectiveIv = msg.mediaIv
+            var inlineBlob = ""
+
+            // Recover storageUrl / mediaKey / mediaIv / inlineBlob from E2EE payload if missing on entity
+            if ((effectiveUrl.isBlank() || effectiveKey.isBlank() || effectiveIv.isBlank()) &&
+                msg.ciphertextPayload.isNotBlank() && msg.ciphertextIv.isNotBlank()
+            ) {
+                val envJson = decryptMessageEnvelope(room, msg.channelType, msg.targetId, msg.ciphertextIv, msg.ciphertextPayload)
+                if (envJson != null) {
+                    if (effectiveUrl.isBlank()) {
+                        effectiveUrl = envJson.optString("storageUrl").orEmpty()
+                            .ifBlank { envJson.optString("mediaUrl").orEmpty() }
+                    }
+                    if (effectiveKey.isBlank()) effectiveKey = envJson.optString("mediaKey").orEmpty()
+                    if (effectiveIv.isBlank()) effectiveIv = envJson.optString("mediaIv").orEmpty()
+                    inlineBlob = envJson.optString("inlineBlob").orEmpty()
+                }
+            }
+
+            val cipherBytes: ByteArray = when {
+                effectiveUrl.isNotBlank() && config != null -> {
+                    backendClient.downloadEncryptedBlob(config, effectiveUrl).getOrThrow()
+                }
+                inlineBlob.isNotBlank() -> {
+                    Base64.decode(inlineBlob, Base64.DEFAULT)
+                }
+                else -> error("Remote encrypted media URL is missing.")
+            }
+
+            val plainBytes = decryptAttachmentBytes(
+                cipherBytes = cipherBytes,
+                mediaKey = effectiveKey,
+                mediaIv = effectiveIv,
+                channelKey = channelKey,
+                room = room
+            )
+
+            val cachedFile = mediaStorage.saveDecryptedMediaToCache(
+                messageId = msg.id,
+                bytes = plainBytes,
+                displayName = msg.fileName.ifBlank { defaultMediaNameForType(msg.contentType) },
+                mimeType = msg.mimeType.ifBlank { defaultMimeForType(msg.contentType) }
+            )
+
+            dao.updateMessageMediaCache(
+                messageId = msg.id,
+                localMediaPath = cachedFile.absolutePath,
+                remoteMediaUrl = effectiveUrl,
+                mediaKey = effectiveKey,
+                mediaIv = effectiveIv
+            )
+
+            msg.copy(
+                localMediaPath = cachedFile.absolutePath,
+                remoteMediaUrl = effectiveUrl,
+                mediaKey = effectiveKey,
+                mediaIv = effectiveIv
+            )
+        }
+    }
+
+    /**
      * Consumes one view of a 1x or 2x disappearing message.
      * Once views_consumed >= max_views, securely wipes & deletes local decrypted media/plaintext
      * and purges the remote ciphertext row permanently.
@@ -1221,6 +1380,8 @@ class VeilRepository(context: Context) {
             decryptedText = if (expired) "" else msg.decryptedText,
             localMediaPath = if (expired) "" else msg.localMediaPath,
             remoteMediaUrl = if (expired) "" else msg.remoteMediaUrl,
+            mediaKey = if (expired) "" else msg.mediaKey,
+            mediaIv = if (expired) "" else msg.mediaIv,
             ciphertextPayload = if (expired) "" else msg.ciphertextPayload
         )
 
@@ -1316,16 +1477,25 @@ class VeilRepository(context: Context) {
             for (rm in remoteMembers) {
                 if (rm.publicKey == me.publicKey) continue
                 val prev = existingMembers[rm.publicKey]
+                val pfpCacheKey = rm.deviceBindingId.ifBlank { rm.publicKey.take(24) }
+                val expectedCacheFile = mediaStorage.getPfpCacheFile(pfpCacheKey)
                 var localPfpPath = prev?.localPfpPath.orEmpty()
-                if (rm.pfpCipherUrl.isNotBlank() && (rm.pfpCipherUrl != prev?.remotePfpCipherUrl || localPfpPath.isBlank())) {
-                    val downloaded = backendClient.downloadEncryptedBlob(config, rm.pfpCipherUrl).getOrNull()
-                    if (downloaded != null) {
-                        runCatching {
-                            val plainJpeg = crypto.decryptBlobPacket(roomKeyBytes, downloaded)
-                            val saved = mediaStorage.saveDecryptedMedia(plainJpeg, "pfp_${rm.username}.jpg", "image/jpeg")
-                            localPfpPath = saved.absolutePath
-                        }
+                val existingLocalValid = localPfpPath.isNotBlank() && File(localPfpPath).let { it.exists() && it.length() > 0L }
+
+                if (rm.pfpCipherUrl.isNotBlank() &&
+                    (rm.pfpCipherUrl != prev?.remotePfpCipherUrl || !existingLocalValid || !expectedCacheFile.exists())
+                ) {
+                    val decryptedPath = downloadAndDecryptPfp(
+                        config = config,
+                        cacheKey = pfpCacheKey,
+                        pfpCipherUrl = rm.pfpCipherUrl,
+                        legacyRoomKey = roomKeyBytes
+                    )
+                    if (!decryptedPath.isNullOrBlank()) {
+                        localPfpPath = decryptedPath
                     }
+                } else if (rm.pfpCipherUrl.isBlank()) {
+                    localPfpPath = ""
                 }
                 val safetyNum = if (crypto.isValidPublicKey(rm.publicKey)) {
                     crypto.computeSafetyNumber(me.publicKey, rm.publicKey)
@@ -1440,7 +1610,7 @@ class VeilRepository(context: Context) {
                 val decryptedJson = if (isAlreadyDisappeared) {
                     null
                 } else {
-                    runCatching { JSONObject(crypto.decryptText(keyBytes, rm.iv, rm.ciphertext)) }.getOrNull()
+                    decryptMessageEnvelope(room, rm.channelType, localTargetId, rm.iv, rm.ciphertext)
                 }
 
                 val type = decryptedJson?.optString("type")?.let {
@@ -1448,7 +1618,10 @@ class VeilRepository(context: Context) {
                 } ?: MessageContentType.TEXT
 
                 var localMediaPath = ""
-                val remoteMediaUrl = decryptedJson?.optString("mediaUrl").orEmpty()
+                val remoteMediaUrl = decryptedJson?.optString("storageUrl").orEmpty()
+                    .ifBlank { decryptedJson?.optString("mediaUrl").orEmpty() }
+                val mediaKey = decryptedJson?.optString("mediaKey").orEmpty()
+                val mediaIv = decryptedJson?.optString("mediaIv").orEmpty()
                 val inlineBlob = decryptedJson?.optString("inlineBlob").orEmpty()
                 val fileName = decryptedJson?.optString("fileName").orEmpty()
                 val mimeType = decryptedJson?.optString("mimeType").orEmpty()
@@ -1467,11 +1640,18 @@ class VeilRepository(context: Context) {
                     }
                     if (cipherPacket != null) {
                         runCatching {
-                            val plainBytes = crypto.decryptBlobPacket(keyBytes, cipherPacket)
-                            localMediaPath = mediaStorage.saveDecryptedMedia(
-                                plainBytes,
-                                fileName.ifBlank { "media" },
-                                mimeType.ifBlank { "application/octet-stream" }
+                            val plainBytes = decryptAttachmentBytes(
+                                cipherBytes = cipherPacket,
+                                mediaKey = mediaKey,
+                                mediaIv = mediaIv,
+                                channelKey = keyBytes,
+                                room = room
+                            )
+                            localMediaPath = mediaStorage.saveDecryptedMediaToCache(
+                                messageId = rm.id,
+                                bytes = plainBytes,
+                                displayName = fileName.ifBlank { defaultMediaNameForType(type) },
+                                mimeType = mimeType.ifBlank { defaultMimeForType(type) }
                             ).absolutePath
                         }
                     }
@@ -1498,6 +1678,8 @@ class VeilRepository(context: Context) {
                     decryptedText = decryptedText,
                     localMediaPath = localMediaPath,
                     remoteMediaUrl = remoteMediaUrl,
+                    mediaKey = mediaKey,
+                    mediaIv = mediaIv,
                     fileName = fileName,
                     mimeType = mimeType,
                     fileSizeBytes = decryptedJson?.optLong("sizeBytes", 0L) ?: 0L,
@@ -1550,12 +1732,14 @@ class VeilRepository(context: Context) {
                 }
             }
 
-            // 5. Sync Incoming Encrypted Voice Call Signals
-            val since = lastSignalPollByRoom[roomId] ?: (System.currentTimeMillis() - 30_000L)
-            val signals = backendClient.fetchIncomingCallSignals(config, room.veilCode, me.publicKey, since)
+            // 5. Sync Incoming Encrypted Voice Call Signals (with 15s overlap to tolerate device clock skew)
+            val baseSince = lastSignalPollByRoom[roomId] ?: (System.currentTimeMillis() - 45_000L)
+            val querySince = (baseSince - 15_000L).coerceAtLeast(0L)
+            val signals = backendClient.fetchIncomingCallSignals(config, room.veilCode, me.publicKey, querySince)
                 .getOrDefault(emptyList())
             if (signals.isNotEmpty()) {
-                lastSignalPollByRoom[roomId] = signals.maxOf { it.createdAt }
+                val maxTs = signals.maxOf { it.createdAt }
+                lastSignalPollByRoom[roomId] = maxOf(lastSignalPollByRoom[roomId] ?: 0L, maxTs)
                 for (sig in signals) {
                     val peer = updatedMembersMap[sig.callerPublicKey]
                     onIncomingCallSignal?.invoke(room, sig, peer)
@@ -1566,33 +1750,86 @@ class VeilRepository(context: Context) {
         }
     }
 
-    suspend fun sendEncryptedCallSignal(roomId: String, signal: RemoteCallSignal) = withContext(Dispatchers.IO) {
+    /**
+     * Lightweight, low-latency call-signal poller designed for 1-second WebRTC SDP/ICE
+     * negotiation and background service listening without triggering full message/member sync.
+     */
+    suspend fun pollCallSignals(
+        roomId: String,
+        onIncomingCallSignal: (VeilRoomEntity, RemoteCallSignal, RoomMemberEntity?) -> Unit
+    ) = withContext(Dispatchers.IO) {
         val room = dao.getRoomById(roomId) ?: return@withContext
         val config = resolveBackendConfigForRoom(room) ?: return@withContext
-        backendClient.sendCallSignal(config, signal)
+        val me = crypto.getOrCreateIdentity()
+        val baseSince = lastSignalPollByRoom[roomId] ?: (System.currentTimeMillis() - 45_000L)
+        val querySince = (baseSince - 15_000L).coerceAtLeast(0L)
+        val signals = backendClient.fetchIncomingCallSignals(config, room.veilCode, me.publicKeyBase64, querySince)
+            .getOrDefault(emptyList())
+        if (signals.isEmpty()) return@withContext
+
+        val maxTs = signals.maxOf { it.createdAt }
+        lastSignalPollByRoom[roomId] = maxOf(lastSignalPollByRoom[roomId] ?: 0L, maxTs)
+
+        val membersByKey = dao.getRoomMembers(roomId).associateBy { it.publicKey }
+        for (sig in signals) {
+            val peer = membersByKey[sig.callerPublicKey]
+            onIncomingCallSignal(room, sig, peer)
+        }
     }
+
+    fun rewindCallSignalCursor(roomId: String, lookbackMs: Long = 60_000L) {
+        lastSignalPollByRoom[roomId] = (System.currentTimeMillis() - lookbackMs).coerceAtLeast(0L)
+    }
+
+    suspend fun sendEncryptedCallSignal(roomId: String, signal: RemoteCallSignal): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            val room = dao.getRoomById(roomId) ?: return@withContext Result.failure(IllegalStateException("Room not found"))
+            val config = resolveBackendConfigForRoom(room) ?: return@withContext Result.failure(IllegalStateException("Backend config missing"))
+            backendClient.sendCallSignal(config, signal)
+        }
 
     // Call History & 90-Day Retention
     suspend fun recordCallHistory(
         roomId: String,
+        roomCode: String = "",
         peerPublicKey: String,
         peerUsername: String,
         peerPfpPath: String,
         direction: CallDirection,
         durationSec: Long
-    ) = withContext(Dispatchers.IO) {
+    ): String = withContext(Dispatchers.IO) {
+        val id = UUID.randomUUID().toString()
+        val resolvedRoomCode = roomCode.ifBlank { dao.getRoomById(roomId)?.veilCode.orEmpty() }
+        val resolvedPfp = peerPfpPath.ifBlank {
+            dao.getRoomMember(roomId, peerPublicKey)?.localPfpPath.orEmpty()
+        }
         dao.upsertCallHistory(
             CallHistoryEntity(
-                id = UUID.randomUUID().toString(),
+                id = id,
                 roomId = roomId,
+                roomCode = resolvedRoomCode,
                 peerPublicKey = peerPublicKey,
                 peerUsername = peerUsername.ifBlank { "Veil Peer" },
-                peerPfpPath = peerPfpPath,
+                peerPfpPath = resolvedPfp,
                 direction = direction,
                 durationSec = durationSec,
                 timestamp = System.currentTimeMillis(),
                 isSeen = direction != CallDirection.MISSED
             )
+        )
+        id
+    }
+
+    suspend fun updateCallHistory(
+        id: String,
+        direction: CallDirection,
+        durationSec: Long
+    ) = withContext(Dispatchers.IO) {
+        dao.updateCallHistory(
+            id = id,
+            direction = direction,
+            durationSec = durationSec,
+            isSeen = direction != CallDirection.MISSED
         )
     }
 
@@ -1634,20 +1871,117 @@ class VeilRepository(context: Context) {
         return profile
     }
 
+    /**
+     * Encrypts the local compressed 512x512 JPEG profile picture with a fresh AES-256-GCM key & IV,
+     * uploads ciphertext to veil-media/pfp/<device_binding_id>.enc, and returns the full Storage URL
+     * with the URL-fragment decryption key & IV (#k=...&iv=...) so any room member can decrypt it.
+     */
     private suspend fun uploadEncryptedPfpIfPresent(
         config: ResolvedBackendConfig,
-        roomCode: String,
-        roomKeyBytes: ByteArray,
+        deviceBindingId: String,
         localPfpPath: String
     ): String {
         if (localPfpPath.isBlank()) return ""
         val file = File(localPfpPath)
-        if (!file.exists()) return ""
+        if (!file.exists() || file.length() <= 0L) return ""
         return runCatching {
-            val encrypted = crypto.encryptBlobPacket(roomKeyBytes, file.readBytes())
-            backendClient.uploadEncryptedBlob(config, roomCode, "pfp_${UUID.randomUUID()}", encrypted)
-                .getOrDefault("")
+            val rawJpeg = file.readBytes()
+            val (keyB64, ivB64) = crypto.generateMediaKeyAndIv()
+            val encryptedBytes = crypto.encryptBytesWithKeyAndIv(keyB64, ivB64, rawJpeg)
+            val storageUrl = backendClient.uploadEncryptedPfpBlob(config, deviceBindingId, encryptedBytes)
+                .getOrThrow()
+            "$storageUrl#k=$keyB64&iv=$ivB64"
         }.getOrDefault("")
+    }
+
+    /**
+     * Downloads ciphertext from pfp_cipher_url via HTTP GET, decrypts it using the embedded #k=...&iv=...
+     * fragment (or legacy room key fallback), and saves the JPEG into context.filesDir/pfp_cache/<cacheKey>.jpg.
+     */
+    private suspend fun downloadAndDecryptPfp(
+        config: ResolvedBackendConfig,
+        cacheKey: String,
+        pfpCipherUrl: String,
+        legacyRoomKey: ByteArray?
+    ): String? {
+        if (pfpCipherUrl.isBlank()) return null
+        val downloaded = backendClient.downloadEncryptedBlob(config, pfpCipherUrl).getOrNull() ?: return null
+        val fragment = pfpCipherUrl.substringAfter('#', "")
+        val params = parseFragmentParams(fragment)
+        val fragKey = params["k"].orEmpty()
+        val fragIv = params["iv"].orEmpty()
+
+        val plainJpeg = when {
+            fragKey.isNotBlank() && fragIv.isNotBlank() -> {
+                runCatching { crypto.decryptBytesWithKeyAndIv(fragKey, fragIv, downloaded) }.getOrNull()
+            }
+            legacyRoomKey != null -> {
+                runCatching { crypto.decryptBlobPacket(legacyRoomKey, downloaded) }.getOrNull()
+            }
+            else -> null
+        } ?: return null
+
+        if (plainJpeg.isEmpty()) return null
+        return runCatching {
+            mediaStorage.saveDecryptedPfp(cacheKey, plainJpeg).absolutePath
+        }.getOrNull()
+    }
+
+    private fun parseFragmentParams(fragment: String): Map<String, String> {
+        if (fragment.isBlank()) return emptyMap()
+        return fragment.split("&")
+            .mapNotNull { pair ->
+                val idx = pair.indexOf('=')
+                if (idx <= 0) null
+                else pair.substring(0, idx) to pair.substring(idx + 1)
+            }
+            .toMap()
+    }
+
+    private suspend fun decryptMessageEnvelope(
+        room: VeilRoomEntity,
+        channelType: ChannelType,
+        localTargetId: String,
+        iv: String,
+        ciphertext: String
+    ): JSONObject? {
+        val primaryKey = deriveChannelKey(room, channelType, localTargetId)
+        val primary = runCatching { JSONObject(crypto.decryptText(primaryKey, iv, ciphertext)) }.getOrNull()
+        if (primary != null) return primary
+        // Fallback for legacy Default Community messages encrypted with deterministic room code key
+        val deterministicKey = deriveDeterministicRoomKey(room.veilCode)
+        return runCatching { JSONObject(crypto.decryptText(deterministicKey, iv, ciphertext)) }.getOrNull()
+    }
+
+    private fun decryptAttachmentBytes(
+        cipherBytes: ByteArray,
+        mediaKey: String,
+        mediaIv: String,
+        channelKey: ByteArray,
+        room: VeilRoomEntity
+    ): ByteArray {
+        if (mediaKey.isNotBlank() && mediaIv.isNotBlank()) {
+            return crypto.decryptBytesWithKeyAndIv(mediaKey, mediaIv, cipherBytes)
+        }
+        return runCatching { crypto.decryptBlobPacket(channelKey, cipherBytes) }.getOrElse {
+            crypto.decryptBlobPacket(deriveDeterministicRoomKey(room.veilCode), cipherBytes)
+        }
+    }
+
+    private fun defaultMediaNameForType(type: MessageContentType): String = when (type) {
+        MessageContentType.IMAGE -> "photo.jpg"
+        MessageContentType.VIDEO -> "video.mp4"
+        MessageContentType.VOICE -> "voice.m4a"
+        MessageContentType.DOCUMENT -> "document.pdf"
+        else -> "attachment.bin"
+    }
+
+    private fun defaultMimeForType(type: MessageContentType): String = when (type) {
+        MessageContentType.IMAGE -> "image/jpeg"
+        MessageContentType.VIDEO -> "video/mp4"
+        MessageContentType.VOICE -> "audio/mp4"
+        MessageContentType.DOCUMENT -> "application/pdf"
+        else -> "application/octet-stream"
     }
 
     private suspend fun deriveChannelKey(
@@ -1657,6 +1991,9 @@ class VeilRepository(context: Context) {
     ): ByteArray {
         if (channelType == ChannelType.COMMUNITY) {
             val comm = dao.getCommunityById(targetId)
+            if (comm?.isDefault == true) {
+                return deriveRoomKey(room)
+            }
             val commKeyB64 = comm?.encryptedCommunityKey?.let { crypto.unprotectString(it) }.orEmpty()
             if (commKeyB64.isNotBlank()) {
                 return crypto.deriveSymmetricKey(commKeyB64, "community:$targetId")
@@ -1669,25 +2006,19 @@ class VeilRepository(context: Context) {
         return deriveRoomKey(room)
     }
 
+    private fun deriveDeterministicRoomKey(veilCode: String): ByteArray {
+        return crypto.deriveSymmetricRoomKey(
+            Base64.encodeToString(veilCode.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
+            "veil-room-v1:$veilCode"
+        )
+    }
+
     private fun deriveRoomKey(room: VeilRoomEntity): ByteArray {
         val storedKey = crypto.unprotectString(room.encryptedRoomKey)
         if (storedKey.isNotBlank()) {
             return crypto.deriveSymmetricRoomKey(storedKey, room.veilCode)
         }
-        if (room.peerPublicKey.isNotBlank() && crypto.isValidPublicKey(room.peerPublicKey)) {
-            return runCatching {
-                crypto.deriveEcdhRoomKey(room.peerPublicKey, room.veilCode)
-            }.getOrElse {
-                crypto.deriveSymmetricRoomKey(
-                    Base64.encodeToString(room.veilCode.toByteArray(), Base64.NO_WRAP),
-                    room.veilCode
-                )
-            }
-        }
-        return crypto.deriveSymmetricRoomKey(
-            Base64.encodeToString(room.veilCode.toByteArray(), Base64.NO_WRAP),
-            room.veilCode
-        )
+        return deriveDeterministicRoomKey(room.veilCode)
     }
 
     private fun disappearingLabel(type: MessageContentType, maxViews: Int): String {

@@ -614,12 +614,12 @@ fun SettingsHubScreen(
                     )
 
                     GlassSecondaryButton(
-                        text = "Copy v${BuildConfig.VERSION_NAME} Supabase SQL Schema (8 Tables)",
+                        text = "Copy v${BuildConfig.VERSION_NAME} One-Step Supabase SQL Script",
                         icon = Icons.Rounded.ContentCopy,
                         onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            cm.setPrimaryClip(ClipData.newPlainText("Veil SQL Schema", VeilBackendClient.SUPABASE_SQL_SCHEMA))
-                            onPostStatus("8-table Veil v${BuildConfig.VERSION_NAME} SQL schema copied to clipboard.")
+                            cm.setPrimaryClip(ClipData.newPlainText("Veil One-Step SQL", VeilBackendClient.SUPABASE_SQL_SCHEMA))
+                            onPostStatus("One-step Veil v${BuildConfig.VERSION_NAME} Supabase SQL script copied.")
                         },
                         modifier = Modifier.fillMaxWidth(),
                         tag = "settings_copy_sql_schema"

@@ -108,6 +108,7 @@ fun ChatScreen(
     directPeer: RoomMemberEntity?,
     community: CommunityEntity?,
     messages: List<MessageEntity>,
+    downloadingMediaIds: Set<String>,
     recordingState: VoiceRecordingState,
     playbackState: VoicePlaybackState,
     onBack: () -> Unit,
@@ -121,8 +122,10 @@ fun ChatScreen(
     onStartVoiceRecord: () -> Unit,
     onStopSendVoiceRecord: (Int) -> Unit,
     onCancelVoiceRecord: () -> Unit,
-    onToggleVoicePlay: (String, String) -> Unit,
+    onToggleVoicePlay: (MessageEntity) -> Unit,
     onSeekVoice: (String, Float) -> Unit,
+    onAutoLoadMedia: (MessageEntity) -> Unit,
+    onEnsureMediaReady: (String, (Result<MessageEntity>) -> Unit) -> Unit,
     onOpenStoredMedia: (MessageEntity) -> Unit,
     onConsumeEphemeralView: (String) -> Unit,
     onPostStatus: (String) -> Unit
@@ -388,6 +391,8 @@ fun ChatScreen(
                     message = msg,
                     showSenderName = channelType == ChannelType.COMMUNITY,
                     playbackState = playbackState,
+                    isDownloading = msg.id in downloadingMediaIds,
+                    onAutoLoadMedia = onAutoLoadMedia,
                     onOpenEphemeral = { activeEphemeralMessage = it },
                     onOpenMedia = onOpenStoredMedia,
                     onOpenLocation = { lat, lng, label ->
@@ -739,12 +744,18 @@ fun ChatScreen(
     // FLAG_SECURE Ephemeral Media & Text Viewer
     val viewingEphemeral = activeEphemeralMessage
     if (viewingEphemeral != null) {
+        val liveEphemeral = messages.firstOrNull { it.id == viewingEphemeral.id } ?: viewingEphemeral
         EphemeralMediaViewerDialog(
-            message = viewingEphemeral,
+            message = liveEphemeral,
+            onEnsureMediaReady = onEnsureMediaReady,
+            onOpenDecryptedFile = onOpenStoredMedia,
             onCloseConsumed = {
-                val id = viewingEphemeral.id
+                val id = liveEphemeral.id
                 activeEphemeralMessage = null
                 onConsumeEphemeralView(id)
+            },
+            onDismissWithoutConsuming = {
+                activeEphemeralMessage = null
             }
         )
     }

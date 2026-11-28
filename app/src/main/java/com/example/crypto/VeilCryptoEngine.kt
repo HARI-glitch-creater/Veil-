@@ -266,6 +266,30 @@ class VeilCryptoEngine(context: Context) {
         return cipher.doFinal(ciphertext)
     }
 
+    fun generateMediaKeyAndIv(): Pair<String, String> {
+        val key = ByteArray(32)
+        val iv = ByteArray(12)
+        secureRandom.nextBytes(key)
+        secureRandom.nextBytes(iv)
+        return encodeB64Url(key) to encodeB64Url(iv)
+    }
+
+    fun encryptBytesWithKeyAndIv(keyB64: String, ivB64: String, rawBytes: ByteArray): ByteArray {
+        val keyBytes = decodeB64(keyB64)
+        val ivBytes = decodeB64(ivB64)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, ivBytes))
+        return cipher.doFinal(rawBytes)
+    }
+
+    fun decryptBytesWithKeyAndIv(keyB64: String, ivB64: String, ciphertextBytes: ByteArray): ByteArray {
+        val keyBytes = decodeB64(keyB64)
+        val ivBytes = decodeB64(ivB64)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, ivBytes))
+        return cipher.doFinal(ciphertextBytes)
+    }
+
     fun encryptBlobPacket(keyBytes: ByteArray, rawBytes: ByteArray): ByteArray {
         val iv = ByteArray(12)
         secureRandom.nextBytes(iv)
@@ -408,7 +432,15 @@ class VeilCryptoEngine(context: Context) {
     }
 
     private fun encodeB64(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
-    private fun decodeB64(input: String): ByteArray = Base64.decode(input.trim(), Base64.DEFAULT)
+    private fun encodeB64Url(bytes: ByteArray): String =
+        Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+    private fun decodeB64(input: String): ByteArray {
+        val trimmed = input.trim()
+        val isUrlSafe = trimmed.contains('-') || trimmed.contains('_')
+        val flags = if (isUrlSafe) Base64.URL_SAFE or Base64.NO_WRAP else Base64.DEFAULT
+        return Base64.decode(trimmed, flags)
+    }
 
     companion object {
         const val VEIL_CODE_LENGTH = 16

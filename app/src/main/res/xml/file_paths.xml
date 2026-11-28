@@ -3,6 +3,12 @@
     <files-path
         name="vault_media"
         path="vault_media/" />
+    <files-path
+        name="pfp_cache"
+        path="pfp_cache/" />
+    <cache-path
+        name="veil_media_cache"
+        path="veil_media/" />
     <cache-path
         name="camera_captures"
         path="camera_captures/" />

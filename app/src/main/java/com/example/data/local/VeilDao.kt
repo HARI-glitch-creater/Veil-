@@ -20,6 +20,12 @@ interface VeilDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertUserProfile(profile: UserProfileEntity)
 
+    @Query("UPDATE user_profile SET remotePfpCipherUrl = :remotePfpCipherUrl WHERE id = 'local_user'")
+    suspend fun updateUserRemotePfpUrl(remotePfpCipherUrl: String)
+
+    @Query("UPDATE user_profile SET localPfpPath = :localPfpPath, remotePfpCipherUrl = :remotePfpCipherUrl WHERE id = 'local_user'")
+    suspend fun updateUserPfp(localPfpPath: String, remotePfpCipherUrl: String)
+
     // Backend Profiles
     @Query("SELECT * FROM backend_profiles ORDER BY isActive DESC, createdAt DESC")
     fun observeBackendProfiles(): Flow<List<BackendProfileEntity>>
@@ -184,7 +190,19 @@ interface VeilDao {
     @Query("UPDATE messages SET syncStatus = :status, remoteMediaUrl = :remoteMediaUrl WHERE id = :messageId")
     suspend fun updateMessageSync(messageId: String, status: SyncStatus, remoteMediaUrl: String)
 
-    @Query("UPDATE messages SET viewsConsumed = :viewsConsumed, isDisappeared = :isDisappeared, decryptedText = :decryptedText, localMediaPath = :localMediaPath, remoteMediaUrl = :remoteMediaUrl, ciphertextPayload = :ciphertextPayload WHERE id = :messageId")
+    @Query("UPDATE messages SET localMediaPath = :localMediaPath WHERE id = :messageId")
+    suspend fun updateMessageLocalMediaPath(messageId: String, localMediaPath: String)
+
+    @Query("UPDATE messages SET localMediaPath = :localMediaPath, remoteMediaUrl = :remoteMediaUrl, mediaKey = :mediaKey, mediaIv = :mediaIv WHERE id = :messageId")
+    suspend fun updateMessageMediaCache(
+        messageId: String,
+        localMediaPath: String,
+        remoteMediaUrl: String,
+        mediaKey: String,
+        mediaIv: String
+    )
+
+    @Query("UPDATE messages SET viewsConsumed = :viewsConsumed, isDisappeared = :isDisappeared, decryptedText = :decryptedText, localMediaPath = :localMediaPath, remoteMediaUrl = :remoteMediaUrl, mediaKey = :mediaKey, mediaIv = :mediaIv, ciphertextPayload = :ciphertextPayload WHERE id = :messageId")
     suspend fun updateMessageEphemeralState(
         messageId: String,
         viewsConsumed: Int,
@@ -192,6 +210,8 @@ interface VeilDao {
         decryptedText: String,
         localMediaPath: String,
         remoteMediaUrl: String,
+        mediaKey: String,
+        mediaIv: String,
         ciphertextPayload: String
     )
 
@@ -204,6 +224,14 @@ interface VeilDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertCallHistory(entry: CallHistoryEntity)
+
+    @Query("UPDATE call_history SET direction = :direction, durationSec = :durationSec, isSeen = :isSeen WHERE id = :id")
+    suspend fun updateCallHistory(
+        id: String,
+        direction: CallDirection,
+        durationSec: Long,
+        isSeen: Boolean
+    )
 
     @Query("UPDATE call_history SET isSeen = 1 WHERE roomId = :roomId")
     suspend fun markMissedCallsSeen(roomId: String)

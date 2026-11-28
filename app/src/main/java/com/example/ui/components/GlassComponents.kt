@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +62,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.ui.theme.AmbientGlowSlate
 import com.example.ui.theme.GlassBorderBottom
 import com.example.ui.theme.GlassBorderTop
@@ -398,29 +400,39 @@ fun ProfileAvatar(
     accent: Color = LocalVeilAccent.current.highlight,
     onClick: (() -> Unit)? = null
 ) {
-    val file = remember(localPfpPath) {
-        if (localPfpPath.isNotBlank()) File(localPfpPath).takeIf { it.exists() } else null
-    }
+    val context = LocalContext.current
+    val file = if (localPfpPath.isNotBlank()) {
+        File(localPfpPath).takeIf { it.exists() && it.length() > 0L }
+    } else null
+    val fileStamp = file?.lastModified() ?: 0L
+
     Box(
         modifier = modifier
             .size(size)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
     ) {
+        MonogramAvatar(
+            label = username,
+            size = size,
+            accent = accent
+        )
         if (file != null) {
+            val imageRequest = remember(file.absolutePath, fileStamp) {
+                ImageRequest.Builder(context)
+                    .data(file)
+                    .memoryCacheKey("${file.absolutePath}:$fileStamp")
+                    .diskCacheKey("${file.absolutePath}:$fileStamp")
+                    .crossfade(true)
+                    .build()
+            }
             AsyncImage(
-                model = file,
+                model = imageRequest,
                 contentDescription = "$username profile picture",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
                     .border(1.dp, accent.copy(alpha = 0.45f), CircleShape)
-            )
-        } else {
-            MonogramAvatar(
-                label = username,
-                size = size,
-                accent = accent
             )
         }
         if (showOnlineDot) {

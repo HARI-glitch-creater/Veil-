@@ -1,7 +1,12 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -28,6 +33,8 @@ import com.example.media.VoiceNoteManager
 import com.example.media.VoicePlaybackState
 import com.example.media.VoiceRecordingState
 import com.example.notifications.VeilNotificationHelper
+import com.example.service.VeilAppState
+import com.example.service.VeilSyncService
 import com.example.ui.theme.LauncherIconManager
 import com.example.ui.theme.ThemePreferences
 import com.example.ui.theme.VeilAccentPresets
@@ -35,9 +42,11 @@ import com.example.update.ReleaseUpdateInfo
 import com.example.update.UpdateDownloadState
 import com.example.update.UpdateManager
 import com.example.workers.VeilWorkScheduler
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -76,8 +85,19 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
         onSendEncryptedSignal = { roomId, signal ->
             repository.sendEncryptedCallSignal(roomId, signal)
         },
-        onRecordCallHistory = { roomId, peerPub, peerName, peerPfp, dir, dur ->
-            repository.recordCallHistory(roomId, peerPub, peerName, peerPfp, dir, dur)
+        onRecordCallHistory = { roomId, roomCode, peerPub, peerName, peerPfp, dir, dur ->
+            repository.recordCallHistory(
+                roomId = roomId,
+                roomCode = roomCode,
+                peerPublicKey = peerPub,
+                peerUsername = peerName,
+                peerPfpPath = peerPfp,
+                direction = dir,
+                durationSec = dur
+            )
+        },
+        onUpdateCallHistory = { id, dir, dur ->
+            repository.updateCallHistory(id, dir, dur)
         }
     )
 
@@ -146,7 +166,16 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
 
+    private val _downloadingMediaIds = MutableStateFlow<Set<String>>(emptySet())
+    val downloadingMediaIds: StateFlow<Set<String>> = _downloadingMediaIds.asStateFlow()
+
+    private val _activeChatTargetId = MutableStateFlow<String?>(null)
+    val activeChatTargetId: StateFlow<String?> = _activeChatTargetId.asStateFlow()
+
+    private val activeMediaDownloads = mutableMapOf<String, Deferred<Result<MessageEntity>>>()
+
     private var activeSyncJob: Job? = null
+    private var callSignalPollJob: Job? = null
     private var realtimeJob: Job? = null
     private var launcherIconJob: Job? = null
     private var notifCounter = 1000
@@ -163,6 +192,9 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
             repository.pruneExpiredCallHistory()
             val route = repository.evaluateBootState()
             _bootRoute.value = route
+            if (route != BootRoute.CREATE_PROFILE) {
+                VeilSyncService.start(application)
+            }
             if (route == BootRoute.REINSTALL_RESTORED) {
                 postBanner("Existing Veil profile detected on this device and restored.")
             }
@@ -179,6 +211,42 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+
+        // Guarantee 1-second call-signal polling for the active call room even on lock-screen cold start
+        viewModelScope.launch {
+            var activeCallRoomJob: Job? = null
+            var polledRoomId: String? = null
+            activeCallState.collect { call ->
+                val targetRoom = if (call.status != com.example.call.VoiceCallStatus.IDLE) call.roomId else ""
+                if (targetRoom.isNotBlank() && targetRoom != polledRoomId) {
+                    activeCallRoomJob?.cancel()
+                    polledRoomId = targetRoom
+                    activeCallRoomJob = viewModelScope.launch {
+                        while (isActive) {
+                            runCatching {
+                                repository.pollCallSignals(targetRoom) { room, signal, peer ->
+                                    voiceCallController.handleIncomingSignal(
+                                        roomId = room.id,
+                                        roomCode = room.veilCode,
+                                        roomName = room.roomName,
+                                        signal = signal,
+                                        peerUsername = peer?.username ?: "Veil Peer",
+                                        peerPfpPath = peer?.localPfpPath.orEmpty(),
+                                        isPeerMuted = peer?.isMuted ?: false,
+                                        isPeerBlocked = peer?.isBlocked ?: false
+                                    )
+                                }
+                            }
+                            delay(1_000L)
+                        }
+                    }
+                } else if (targetRoom.isBlank()) {
+                    activeCallRoomJob?.cancel()
+                    activeCallRoomJob = null
+                    polledRoomId = null
+                }
+            }
+        }
     }
 
     fun getLocalIdentity(): LocalIdentity = repository.getLocalIdentity()
@@ -190,6 +258,30 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearBanner() {
         _statusBanner.value = null
+    }
+
+    fun setActiveChatTargetId(targetId: String?) {
+        _activeChatTargetId.value = targetId
+    }
+
+    private fun triggerIncomingMessageHaptic() {
+        val ctx = getApplication<Application>()
+        val pattern = longArrayOf(0L, 45L, 60L, 45L)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vm?.defaultVibrator?.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            } else {
+                @Suppress("DEPRECATION")
+                val v = ctx.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    v?.vibrate(VibrationEffect.createWaveform(pattern, -1))
+                } else {
+                    @Suppress("DEPRECATION")
+                    v?.vibrate(pattern, -1)
+                }
+            }
+        }
     }
 
     fun updateOnboardingDraft(transform: (OnboardingDraft) -> OnboardingDraft) {
@@ -219,6 +311,7 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
                 localPfpPath = draft.localPfpPath
             )
             res.onSuccess { (_, wasRestored) ->
+                VeilSyncService.start(getApplication())
                 if (wasRestored) {
                     postBanner("Account already bound to this phone. Redirected to your existing profile.")
                 }
@@ -518,6 +611,26 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun ensureMediaDownloaded(
+        messageId: String,
+        onComplete: ((Result<MessageEntity>) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val deferred = activeMediaDownloads[messageId] ?: viewModelScope.async {
+                _downloadingMediaIds.value = _downloadingMediaIds.value + messageId
+                try {
+                    repository.ensureMediaDownloaded(messageId)
+                } finally {
+                    _downloadingMediaIds.value = _downloadingMediaIds.value - messageId
+                    activeMediaDownloads.remove(messageId)
+                }
+            }.also { activeMediaDownloads[messageId] = it }
+
+            val result = deferred.await()
+            onComplete?.invoke(result)
+        }
+    }
+
     // Voice-Only Calls
     fun startVoiceCall(member: RoomMemberEntity) {
         val room = activeRoom.value ?: return
@@ -544,6 +657,31 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
             peerPublicKey = peerPublicKey,
             peerUsername = peerUsername,
             peerPfpPath = peerPfpPath
+        )
+    }
+
+    fun acceptIncomingCall(
+        roomIdOverride: String? = null,
+        roomCodeOverride: String? = null,
+        roomNameOverride: String? = null,
+        callerPublicKeyOverride: String? = null,
+        callerUsernameOverride: String? = null,
+        callerPfpPathOverride: String? = null,
+        offerSdpOverride: String? = null
+    ) {
+        val resolvedRoomId = roomIdOverride?.ifBlank { activeCallState.value.roomId }
+            ?: activeCallState.value.roomId
+        if (resolvedRoomId.isNotBlank()) {
+            repository.rewindCallSignalCursor(resolvedRoomId)
+        }
+        voiceCallController.acceptIncomingCall(
+            roomIdOverride = roomIdOverride,
+            roomCodeOverride = roomCodeOverride,
+            roomNameOverride = roomNameOverride,
+            callerPublicKeyOverride = callerPublicKeyOverride,
+            callerUsernameOverride = callerUsernameOverride,
+            callerPfpPathOverride = callerPfpPathOverride,
+            offerSdpOverride = offerSdpOverride
         )
     }
 
@@ -652,6 +790,26 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
                 delay(4_500L)
             }
         }
+        // Dedicated 1-second WebRTC call signal poller (OFFER / ANSWER / trickled ICE)
+        callSignalPollJob = viewModelScope.launch {
+            while (isActive) {
+                runCatching {
+                    repository.pollCallSignals(roomId) { room, signal, peer ->
+                        voiceCallController.handleIncomingSignal(
+                            roomId = room.id,
+                            roomCode = room.veilCode,
+                            roomName = room.roomName,
+                            signal = signal,
+                            peerUsername = peer?.username ?: "Veil Peer",
+                            peerPfpPath = peer?.localPfpPath.orEmpty(),
+                            isPeerMuted = peer?.isMuted ?: false,
+                            isPeerBlocked = peer?.isBlocked ?: false
+                        )
+                    }
+                }
+                delay(1_000L)
+            }
+        }
         realtimeJob = viewModelScope.launch {
             val room = repository.getRoomById(roomId) ?: return@launch
             val config = repository.resolveBackendConfigForRoom(room) ?: return@launch
@@ -667,14 +825,19 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
         repository.syncRoom(
             roomId = roomId,
             onNewMessageAlert = { alert ->
-                notificationHelper.showMessageNotification(
-                    notificationId = notifCounter++,
-                    title = alert.title,
-                    body = alert.body,
-                    roomId = alert.roomId,
-                    targetId = alert.targetId,
-                    isCommunity = alert.isCommunity
-                )
+                val openTarget = _activeChatTargetId.value
+                if (VeilAppState.isForeground && !openTarget.isNullOrBlank() && openTarget == alert.targetId) {
+                    triggerIncomingMessageHaptic()
+                } else {
+                    notificationHelper.showMessageNotification(
+                        notificationId = notifCounter++,
+                        title = alert.title,
+                        body = alert.body,
+                        roomId = alert.roomId,
+                        targetId = alert.targetId,
+                        isCommunity = alert.isCommunity
+                    )
+                }
             },
             onIncomingCallSignal = { room, signal, peer ->
                 voiceCallController.handleIncomingSignal(
@@ -697,6 +860,8 @@ class VeilViewModel(application: Application) : AndroidViewModel(application) {
     private fun stopRoomSyncLoop() {
         activeSyncJob?.cancel()
         activeSyncJob = null
+        callSignalPollJob?.cancel()
+        callSignalPollJob = null
         realtimeJob?.cancel()
         realtimeJob = null
     }

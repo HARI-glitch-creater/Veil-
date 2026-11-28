@@ -35,6 +35,9 @@ class VeilBackgroundSyncWorker(
         return runCatching {
             val repository = VeilRepository(applicationContext)
             val notificationHelper = VeilNotificationHelper(applicationContext)
+            if (repository.getUserProfile() != null) {
+                com.example.service.VeilSyncService.start(applicationContext)
+            }
             val rooms = repository.getAllRooms()
             var notifIndex = 2000
             for (room in rooms) {
@@ -66,6 +69,7 @@ class VeilBackgroundSyncWorker(
                                     roomCode = callRoom.veilCode,
                                     callerPublicKey = signal.callerPublicKey,
                                     callerUsername = peer?.username ?: "Veil Peer",
+                                    callerPfpPath = peer?.localPfpPath.orEmpty(),
                                     roomName = callRoom.roomName,
                                     offerSdp = sdp
                                 )

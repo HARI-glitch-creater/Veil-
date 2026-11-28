@@ -108,9 +108,11 @@ import com.example.call.VoiceCallStatus
 import com.example.data.BootRoute
 import com.example.data.local.CallDirection
 import com.example.data.local.ChannelType
+import com.example.data.local.MessageContentType
 import com.example.data.local.MessageEntity
 import com.example.data.local.VeilRoomEntity
 import com.example.notifications.VeilNotificationHelper
+import com.example.service.VeilAppState
 import com.example.ui.VeilViewModel
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassPrimaryButton
@@ -149,6 +151,9 @@ import com.example.ui.theme.SpaceGroteskFamily
 import com.example.ui.theme.VeilTheme
 import com.example.update.ReleaseUpdateInfo
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 sealed interface VeilScreen {
     data object BootLoading : VeilScreen
@@ -171,9 +176,24 @@ enum class HomeTab(val label: String) {
     CALLS("Calls")
 }
 
+private sealed interface PendingCallAction {
+    data class Outgoing(val peerKey: String, val peerName: String, val peerPfp: String) : PendingCallAction
+    data class IncomingAccept(
+        val roomId: String? = null,
+        val roomCode: String? = null,
+        val roomName: String? = null,
+        val callerPub: String? = null,
+        val callerName: String? = null,
+        val callerPfp: String? = null,
+        val offerSdp: String? = null
+    ) : PendingCallAction
+}
+
 class MainActivity : ComponentActivity() {
 
     private val viewModel: VeilViewModel by viewModels()
+    private val _pendingAcceptIntent = MutableStateFlow<PendingCallAction.IncomingAccept?>(null)
+    private val pendingAcceptIntent: StateFlow<PendingCallAction.IncomingAccept?> = _pendingAcceptIntent.asStateFlow()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -188,9 +208,23 @@ class MainActivity : ComponentActivity() {
         setContent {
             val accentColor by viewModel.accentColor.collectAsStateWithLifecycle()
             VeilTheme(accentColor = accentColor) {
-                VeilAppRoot(viewModel = viewModel)
+                VeilAppRoot(
+                    viewModel = viewModel,
+                    pendingAcceptIntentFlow = pendingAcceptIntent,
+                    onConsumePendingAcceptIntent = { _pendingAcceptIntent.value = null }
+                )
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        VeilAppState.isForeground = true
+    }
+
+    override fun onStop() {
+        VeilAppState.isForeground = false
+        super.onStop()
     }
 
     override fun onResume() {
@@ -209,13 +243,14 @@ class MainActivity : ComponentActivity() {
         if (intent == null) return
         when (intent.action) {
             VeilNotificationHelper.ACTION_ACCEPT_CALL -> {
-                viewModel.voiceCallController.acceptIncomingCall(
-                    roomIdOverride = intent.getStringExtra(VeilNotificationHelper.EXTRA_ROOM_ID),
-                    roomCodeOverride = intent.getStringExtra(VeilNotificationHelper.EXTRA_ROOM_CODE),
-                    roomNameOverride = intent.getStringExtra(VeilNotificationHelper.EXTRA_ROOM_NAME),
-                    callerPublicKeyOverride = intent.getStringExtra(VeilNotificationHelper.EXTRA_CALLER_PUBLIC_KEY),
-                    callerUsernameOverride = intent.getStringExtra(VeilNotificationHelper.EXTRA_CALLER_USERNAME),
-                    offerSdpOverride = intent.getStringExtra(VeilNotificationHelper.EXTRA_OFFER_SDP)
+                _pendingAcceptIntent.value = PendingCallAction.IncomingAccept(
+                    roomId = intent.getStringExtra(VeilNotificationHelper.EXTRA_ROOM_ID),
+                    roomCode = intent.getStringExtra(VeilNotificationHelper.EXTRA_ROOM_CODE),
+                    roomName = intent.getStringExtra(VeilNotificationHelper.EXTRA_ROOM_NAME),
+                    callerPub = intent.getStringExtra(VeilNotificationHelper.EXTRA_CALLER_PUBLIC_KEY),
+                    callerName = intent.getStringExtra(VeilNotificationHelper.EXTRA_CALLER_USERNAME),
+                    callerPfp = intent.getStringExtra(VeilNotificationHelper.EXTRA_CALLER_PFP_PATH),
+                    offerSdp = intent.getStringExtra(VeilNotificationHelper.EXTRA_OFFER_SDP)
                 )
             }
             VeilNotificationHelper.ACTION_DECLINE_CALL -> {
@@ -227,7 +262,11 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VeilAppRoot(viewModel: VeilViewModel) {
+private fun VeilAppRoot(
+    viewModel: VeilViewModel,
+    pendingAcceptIntentFlow: StateFlow<PendingCallAction.IncomingAccept?>,
+    onConsumePendingAcceptIntent: () -> Unit
+) {
     val context = LocalContext.current
     val accent = LocalVeilAccent.current
 
@@ -249,6 +288,7 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
     val updateDownloadState by viewModel.updateDownloadState.collectAsStateWithLifecycle()
     val isCheckingUpdate by viewModel.isCheckingUpdate.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
+    val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsStateWithLifecycle()
 
     var currentScreen by remember { mutableStateOf<VeilScreen>(VeilScreen.BootLoading) }
     var splashElapsed by remember { mutableStateOf(false) }
@@ -266,12 +306,75 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
         ActivityResultContracts.RequestPermission()
     ) { }
 
-    val callAudioPermLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (!granted) {
+    var pendingCallAction by remember { mutableStateOf<PendingCallAction?>(null) }
+    val pendingAcceptFromIntent by pendingAcceptIntentFlow.collectAsStateWithLifecycle()
+
+    fun executeCallAction(action: PendingCallAction) {
+        when (action) {
+            is PendingCallAction.Outgoing -> {
+                viewModel.startVoiceCallByKey(action.peerKey, action.peerName, action.peerPfp)
+            }
+            is PendingCallAction.IncomingAccept -> {
+                viewModel.acceptIncomingCall(
+                    roomIdOverride = action.roomId,
+                    roomCodeOverride = action.roomCode,
+                    roomNameOverride = action.roomName,
+                    callerPublicKeyOverride = action.callerPub,
+                    callerUsernameOverride = action.callerName,
+                    callerPfpPathOverride = action.callerPfp,
+                    offerSdpOverride = action.offerSdp
+                )
+            }
+        }
+    }
+
+    val callPermissionsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val action = pendingCallAction
+        pendingCallAction = null
+        val micGranted = perms[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (micGranted) {
+            if (action != null) executeCallAction(action)
+        } else {
             viewModel.postBanner("Microphone permission is required for encrypted voice calls.")
         }
+    }
+
+    fun requestCallPermissionsAndRun(action: PendingCallAction) {
+        val hasMic = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        val needsNotif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+
+        if (!hasMic) {
+            pendingCallAction = action
+            val toRequest = buildList {
+                add(Manifest.permission.RECORD_AUDIO)
+                if (needsNotif && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }.toTypedArray()
+            callPermissionsLauncher.launch(toRequest)
+        } else {
+            if (needsNotif && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            executeCallAction(action)
+        }
+    }
+
+    // Consume lock-screen / notification Accept call intents through permission guard
+    LaunchedEffect(pendingAcceptFromIntent) {
+        val accept = pendingAcceptFromIntent ?: return@LaunchedEffect
+        onConsumePendingAcceptIntent()
+        requestCallPermissionsAndRun(accept)
     }
 
     // Hold Dark Glass Splash Screen for ~1.2s before routing into BootRoute
@@ -292,8 +395,15 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
         }
     }
 
-    // Request POST_NOTIFICATIONS on Android 13+ when entering HomeShell
+    // Track active open chat target for in-chat haptic feedback & request POST_NOTIFICATIONS on Android 13+
     LaunchedEffect(currentScreen) {
+        val openTargetId = when (val screen = currentScreen) {
+            is VeilScreen.DirectChat -> screen.peerPublicKey
+            is VeilScreen.CommunityChat -> screen.communityId
+            else -> null
+        }
+        viewModel.setActiveChatTargetId(openTargetId)
+
         if (currentScreen == VeilScreen.HomeShell && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 context,
@@ -314,31 +424,67 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
     }
 
     fun startVoiceCallWithPermissionCheck(peerKey: String, peerName: String, peerPfp: String) {
-        val hasMic = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-        if (hasMic) {
-            viewModel.startVoiceCallByKey(peerKey, peerName, peerPfp)
-        } else {
-            callAudioPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        requestCallPermissionsAndRun(PendingCallAction.Outgoing(peerKey, peerName, peerPfp))
+    }
+
+    fun launchFileProviderViewer(readyMessage: MessageEntity) {
+        val uri = viewModel.repository.mediaStorage.getFileProviderUri(readyMessage.localMediaPath)
+        if (uri == null) {
+            viewModel.postBanner("Unable to prepare local viewer for this file.")
+            return
+        }
+        val resolvedMime = readyMessage.mimeType.ifBlank {
+            when (readyMessage.contentType) {
+                MessageContentType.IMAGE -> "image/*"
+                MessageContentType.VIDEO -> "video/*"
+                MessageContentType.VOICE -> "audio/*"
+                else -> "*/*"
+            }
+        }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, resolvedMime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            context.startActivity(Intent.createChooser(intent, readyMessage.fileName.ifBlank { "Open File" }))
+        }.onFailure {
+            viewModel.postBanner("No app available to open this file type.")
         }
     }
 
     fun openStoredMediaExternal(message: MessageEntity) {
-        val uri = viewModel.repository.mediaStorage.getFileProviderUri(message.localMediaPath)
-        if (uri == null) {
-            viewModel.postBanner("Encrypted media file is not cached locally yet.")
+        val existingUri = viewModel.repository.mediaStorage.getFileProviderUri(message.localMediaPath)
+        if (existingUri != null) {
+            launchFileProviderViewer(message)
             return
         }
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, message.mimeType.ifBlank { "*/*" })
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        viewModel.postBanner("Downloading & decrypting ${message.fileName.ifBlank { "encrypted file" }}...")
+        viewModel.ensureMediaDownloaded(message.id) { res ->
+            res.onSuccess { readyMessage ->
+                launchFileProviderViewer(readyMessage)
+            }.onFailure { err ->
+                viewModel.postBanner(err.message ?: "Unable to download encrypted file.")
+            }
         }
-        runCatching {
-            context.startActivity(Intent.createChooser(intent, message.fileName.ifBlank { "Open File" }))
-        }.onFailure {
-            viewModel.postBanner("No app available to open this file type.")
+    }
+
+    fun toggleVoiceNotePlayback(message: MessageEntity) {
+        val existing = message.localMediaPath
+            .takeIf { it.isNotBlank() }
+            ?.let { java.io.File(it) }
+            ?.takeIf { it.exists() && it.length() > 0L }
+        if (existing != null) {
+            viewModel.voiceManager.togglePlayback(message.id, existing.absolutePath)
+            return
+        }
+        viewModel.ensureMediaDownloaded(message.id) { res ->
+            res.onSuccess { readyMessage ->
+                if (readyMessage.localMediaPath.isNotBlank()) {
+                    viewModel.voiceManager.togglePlayback(readyMessage.id, readyMessage.localMediaPath)
+                }
+            }.onFailure { err ->
+                viewModel.postBanner(err.message ?: "Unable to download encrypted voice note.")
+            }
         }
     }
 
@@ -503,6 +649,7 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                         directPeer = peer,
                         community = null,
                         messages = messages,
+                        downloadingMediaIds = downloadingMediaIds,
                         recordingState = recordingState,
                         playbackState = playbackState,
                         onBack = { currentScreen = VeilScreen.HomeShell },
@@ -533,8 +680,10 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                             viewModel.stopAndSendVoiceNote(currentRoom.id, ChannelType.DIRECT, screen.peerPublicKey, maxViews)
                         },
                         onCancelVoiceRecord = { viewModel.cancelVoiceRecording() },
-                        onToggleVoicePlay = { id, path -> viewModel.voiceManager.togglePlayback(id, path) },
+                        onToggleVoicePlay = ::toggleVoiceNotePlayback,
                         onSeekVoice = { id, frac -> viewModel.voiceManager.seekPlayback(id, frac) },
+                        onAutoLoadMedia = { msg -> viewModel.ensureMediaDownloaded(msg.id) },
+                        onEnsureMediaReady = { msgId, cb -> viewModel.ensureMediaDownloaded(msgId, cb) },
                         onOpenStoredMedia = ::openStoredMediaExternal,
                         onConsumeEphemeralView = { msgId -> viewModel.consumeEphemeralView(msgId) },
                         onPostStatus = { viewModel.postBanner(it) }
@@ -560,6 +709,7 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                         directPeer = null,
                         community = comm,
                         messages = messages,
+                        downloadingMediaIds = downloadingMediaIds,
                         recordingState = recordingState,
                         playbackState = playbackState,
                         onBack = { currentScreen = VeilScreen.HomeShell },
@@ -583,8 +733,10 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                             viewModel.stopAndSendVoiceNote(currentRoom.id, ChannelType.COMMUNITY, screen.communityId, maxViews)
                         },
                         onCancelVoiceRecord = { viewModel.cancelVoiceRecording() },
-                        onToggleVoicePlay = { id, path -> viewModel.voiceManager.togglePlayback(id, path) },
+                        onToggleVoicePlay = ::toggleVoiceNotePlayback,
                         onSeekVoice = { id, frac -> viewModel.voiceManager.seekPlayback(id, frac) },
+                        onAutoLoadMedia = { msg -> viewModel.ensureMediaDownloaded(msg.id) },
+                        onEnsureMediaReady = { msgId, cb -> viewModel.ensureMediaDownloaded(msgId, cb) },
                         onOpenStoredMedia = ::openStoredMediaExternal,
                         onConsumeEphemeralView = { msgId -> viewModel.consumeEphemeralView(msgId) },
                         onPostStatus = { viewModel.postBanner(it) }
@@ -744,7 +896,7 @@ private fun VeilAppRoot(viewModel: VeilViewModel) {
                 onToggleMute = { viewModel.voiceCallController.toggleMicMute() },
                 onToggleSpeaker = { viewModel.voiceCallController.toggleSpeaker() },
                 onEndCall = { viewModel.voiceCallController.endActiveCall() },
-                onAcceptIncoming = { viewModel.voiceCallController.acceptIncomingCall() },
+                onAcceptIncoming = { requestCallPermissionsAndRun(PendingCallAction.IncomingAccept()) },
                 onDeclineIncoming = { viewModel.voiceCallController.declineIncomingCall() }
             )
         }
@@ -1214,6 +1366,7 @@ private fun HomeShellScreen(
 
                         HomeTab.CALLS -> CallsTabScreen(
                             callHistory = callHistory,
+                            members = members,
                             searchQuery = searchQuery,
                             onPlaceVoiceCall = onPlaceVoiceCall
                         )

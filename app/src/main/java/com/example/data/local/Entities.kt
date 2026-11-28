@@ -170,6 +170,8 @@ data class MessageEntity(
     val decryptedText: String = "",
     val localMediaPath: String = "",
     val remoteMediaUrl: String = "",
+    val mediaKey: String = "",
+    val mediaIv: String = "",
     val fileName: String = "",
     val mimeType: String = "",
     val fileSizeBytes: Long = 0L,
@@ -189,6 +191,7 @@ data class MessageEntity(
 data class CallHistoryEntity(
     @PrimaryKey val id: String,
     val roomId: String,
+    val roomCode: String = "",
     val peerPublicKey: String,
     val peerUsername: String,
     val peerPfpPath: String = "",

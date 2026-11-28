@@ -45,8 +45,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.MainActivity
 import com.example.notifications.VeilNotificationHelper
+import com.example.service.CallActionReceiver
 import com.example.ui.components.GlassPill
-import com.example.ui.components.MonogramAvatar
+import com.example.ui.components.ProfileAvatar
 import com.example.ui.components.VeilObsidianBackdrop
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.LocalVeilAccent
@@ -73,10 +74,15 @@ class IncomingCallActivity : ComponentActivity() {
             )
         }
 
+        IncomingCallBridge.onRemoteCancelled = {
+            runOnUiThread { finish() }
+        }
+
         val roomId = intent.getStringExtra(VeilNotificationHelper.EXTRA_ROOM_ID).orEmpty()
         val roomCode = intent.getStringExtra(VeilNotificationHelper.EXTRA_ROOM_CODE).orEmpty()
         val callerPub = intent.getStringExtra(VeilNotificationHelper.EXTRA_CALLER_PUBLIC_KEY).orEmpty()
         val callerName = intent.getStringExtra(VeilNotificationHelper.EXTRA_CALLER_USERNAME).orEmpty().ifBlank { "Veil Peer" }
+        val callerPfp = intent.getStringExtra(VeilNotificationHelper.EXTRA_CALLER_PFP_PATH).orEmpty()
         val roomName = intent.getStringExtra(VeilNotificationHelper.EXTRA_ROOM_NAME).orEmpty().ifBlank { "Veil Room" }
         val offerSdp = intent.getStringExtra(VeilNotificationHelper.EXTRA_OFFER_SDP).orEmpty()
 
@@ -84,8 +90,10 @@ class IncomingCallActivity : ComponentActivity() {
             VeilTheme {
                 IncomingVoiceCallRingScreen(
                     callerUsername = callerName,
+                    callerPfpPath = callerPfp,
                     roomName = roomName,
                     onAccept = {
+                        VeilNotificationHelper(this).cancelIncomingCallNotification()
                         val acceptIntent = Intent(this, MainActivity::class.java).apply {
                             action = VeilNotificationHelper.ACTION_ACCEPT_CALL
                             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -93,6 +101,7 @@ class IncomingCallActivity : ComponentActivity() {
                             putExtra(VeilNotificationHelper.EXTRA_ROOM_CODE, roomCode)
                             putExtra(VeilNotificationHelper.EXTRA_CALLER_PUBLIC_KEY, callerPub)
                             putExtra(VeilNotificationHelper.EXTRA_CALLER_USERNAME, callerName)
+                            putExtra(VeilNotificationHelper.EXTRA_CALLER_PFP_PATH, callerPfp)
                             putExtra(VeilNotificationHelper.EXTRA_ROOM_NAME, roomName)
                             putExtra(VeilNotificationHelper.EXTRA_OFFER_SDP, offerSdp)
                         }
@@ -100,19 +109,34 @@ class IncomingCallActivity : ComponentActivity() {
                         finish()
                     },
                     onDecline = {
-                        VeilNotificationHelper(this).cancelIncomingCallNotification()
-                        IncomingCallBridge.onDeclineFromLockScreen?.invoke(roomId, roomCode, callerPub, callerName)
+                        // Dispatch via CallActionReceiver so Decline works even if MainActivity is dead
+                        val declineBroadcast = Intent(this, CallActionReceiver::class.java).apply {
+                            action = VeilNotificationHelper.ACTION_DECLINE_CALL
+                            putExtra(VeilNotificationHelper.EXTRA_ROOM_ID, roomId)
+                            putExtra(VeilNotificationHelper.EXTRA_ROOM_CODE, roomCode)
+                            putExtra(VeilNotificationHelper.EXTRA_CALLER_PUBLIC_KEY, callerPub)
+                            putExtra(VeilNotificationHelper.EXTRA_CALLER_USERNAME, callerName)
+                            putExtra(VeilNotificationHelper.EXTRA_CALLER_PFP_PATH, callerPfp)
+                            putExtra(VeilNotificationHelper.EXTRA_ROOM_NAME, roomName)
+                        }
+                        sendBroadcast(declineBroadcast)
                         finish()
                     }
                 )
             }
         }
     }
+
+    override fun onDestroy() {
+        IncomingCallBridge.onRemoteCancelled = null
+        super.onDestroy()
+    }
 }
 
 @Composable
 private fun IncomingVoiceCallRingScreen(
     callerUsername: String,
+    callerPfpPath: String,
     roomName: String,
     onAccept: () -> Unit,
     onDecline: () -> Unit
@@ -161,8 +185,9 @@ private fun IncomingVoiceCallRingScreen(
                             .background(accent.primary.copy(alpha = 0.14f))
                             .border(1.dp, accent.highlight.copy(alpha = 0.35f), CircleShape)
                     )
-                    MonogramAvatar(
-                        label = callerUsername,
+                    ProfileAvatar(
+                        localPfpPath = callerPfpPath,
+                        username = callerUsername,
                         size = 108.dp,
                         accent = accent.highlight
                     )

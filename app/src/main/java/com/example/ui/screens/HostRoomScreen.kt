@@ -235,6 +235,64 @@ fun HostRoomScreen(
                             )
 
                             if (selectedType == BackendType.SUPABASE) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(accent.container.copy(alpha = 0.55f))
+                                        .border(1.dp, accent.highlight.copy(alpha = 0.30f), RoundedCornerShape(14.dp))
+                                        .padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Code,
+                                            contentDescription = null,
+                                            tint = accent.highlight,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Text(
+                                            text = "One-Step Database & Media Setup",
+                                            style = MaterialTheme.typography.titleSmall.copy(
+                                                color = SnowPrimary,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        )
+                                    }
+                                    Text(
+                                        text = "1. Open your Supabase project SQL Editor.\n2. Copy and run the all-in-one Veil SQL script once. It automatically creates all 8 tables, open RLS policies, the public veil-media storage bucket, and Realtime publications — no manual bucket setup needed.\n3. Paste your Project URL and anon key below, then tap Test.",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = SlateSecondary,
+                                            lineHeight = 18.sp
+                                        )
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        GlassSecondaryButton(
+                                            text = "Copy All-in-One SQL",
+                                            icon = Icons.Rounded.ContentCopy,
+                                            accentColor = accent.highlight,
+                                            onClick = {
+                                                copyToClipboard("Veil v${BuildConfig.VERSION_NAME} One-Step SQL", VeilBackendClient.SUPABASE_SQL_SCHEMA)
+                                                viewModel.postBanner("One-step Veil SQL script copied. Paste and run once in Supabase SQL Editor.")
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            tag = "host_quick_copy_sql_button"
+                                        )
+                                        GlassSecondaryButton(
+                                            text = "Inspect",
+                                            icon = Icons.Rounded.Code,
+                                            onClick = { showSqlSheet = true },
+                                            tag = "host_sql_schema_button"
+                                        )
+                                    }
+                                }
+
                                 GlassTextField(
                                     value = baseUrl,
                                     onValueChange = { baseUrl = it },
@@ -254,31 +312,20 @@ fun HostRoomScreen(
                                     supportingText = "All messages, PFPs, files, and call signals are encrypted on-device before upload.",
                                     tag = "host_api_key_input"
                                 )
-                                Row(
+                                GlassSecondaryButton(
+                                    text = "Test Connection",
+                                    icon = Icons.Rounded.NetworkCheck,
+                                    enabled = !isBusy && baseUrl.isNotBlank(),
+                                    onClick = {
+                                        isBusy = true
+                                        viewModel.testBackendDraft(buildDraft()) { res ->
+                                            isBusy = false
+                                            testResult = res
+                                        }
+                                    },
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    GlassSecondaryButton(
-                                        text = "SQL Schema",
-                                        icon = Icons.Rounded.Code,
-                                        onClick = { showSqlSheet = true },
-                                        tag = "host_sql_schema_button"
-                                    )
-                                    GlassSecondaryButton(
-                                        text = "Test",
-                                        icon = Icons.Rounded.NetworkCheck,
-                                        enabled = !isBusy && baseUrl.isNotBlank(),
-                                        onClick = {
-                                            isBusy = true
-                                            viewModel.testBackendDraft(buildDraft()) { res ->
-                                                isBusy = false
-                                                testResult = res
-                                            }
-                                        },
-                                        tag = "host_test_connection_button"
-                                    )
-                                }
+                                    tag = "host_test_connection_button"
+                                )
                             } else {
                                 GlassTextField(
                                     value = profileName,
@@ -537,11 +584,11 @@ fun HostRoomScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "Veil v${BuildConfig.VERSION_NAME} Zero-Knowledge SQL Schema (8 Tables)",
+                    text = "Veil v${BuildConfig.VERSION_NAME} One-Step Database & Media Setup",
                     style = MaterialTheme.typography.titleLarge.copy(color = SnowPrimary)
                 )
                 Text(
-                    text = "Run once in Supabase SQL Editor. All messages, PFPs, files, locations, and voice call signals are encrypted on-device before insert.",
+                    text = "Copy and run this single idempotent SQL block once in Supabase SQL Editor. It creates all 8 tables, RLS policies, the public veil-media storage bucket, and Realtime publications automatically.",
                     style = MaterialTheme.typography.bodySmall.copy(color = SlateSecondary)
                 )
                 GlassCard(
@@ -559,11 +606,11 @@ fun HostRoomScreen(
                     )
                 }
                 GlassPrimaryButton(
-                    text = "Copy SQL to Clipboard",
+                    text = "Copy All-in-One SQL Script",
                     icon = Icons.Rounded.ContentCopy,
                     onClick = {
-                        copyToClipboard("Veil v${BuildConfig.VERSION_NAME} SQL Schema", VeilBackendClient.SUPABASE_SQL_SCHEMA)
-                        viewModel.postBanner("8-table Veil SQL schema copied.")
+                        copyToClipboard("Veil v${BuildConfig.VERSION_NAME} One-Step SQL", VeilBackendClient.SUPABASE_SQL_SCHEMA)
+                        viewModel.postBanner("One-step Veil SQL script copied.")
                         showSqlSheet = false
                     },
                     modifier = Modifier.fillMaxWidth(),
